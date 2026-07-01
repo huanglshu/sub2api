@@ -92,6 +92,10 @@ var openAIChatGPTInternalUnsupportedFields = []string{
 	"stream_options",
 }
 
+var openAIChatGPTInternalUnsupportedInputItemFields = []string{
+	"internal_chat_message_metadata_passthrough",
+}
+
 var openAICodexOAuthUnsupportedFields = append([]string{
 	"max_output_tokens",
 	"max_completion_tokens",

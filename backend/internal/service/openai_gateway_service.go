@@ -2929,6 +2929,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 && gjson.GetBytes(body, "previous_response_id").Exists() {
 		markPatchDelete("previous_response_id")
 	}
+	if openAIRequestBodyMayContainInternalUnsupportedInputItemField(body) {
+		decoded, decodeErr := ensureReqBody()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIRequestBodyMap(decoded) {
+			markDecodedModified()
+		}
+	}
 	if openAIRequestBodyMayContainEmptyBase64InputImage(body) {
 		decoded, decodeErr := ensureReqBody()
 		if decodeErr != nil {
@@ -3424,6 +3433,14 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			body = normalizedBody
 		}
 		reqStream = gjson.GetBytes(body, "stream").Bool()
+	}
+
+	sanitizedUnsupportedBody, sanitizedUnsupported, err := sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIBody(body)
+	if err != nil {
+		return nil, err
+	}
+	if sanitizedUnsupported {
+		body = sanitizedUnsupportedBody
 	}
 
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
@@ -7563,6 +7580,17 @@ func openAIRequestBodyMayContainInputImageToken(body []byte) bool {
 	return bytes.Contains(body, []byte("\\u"))
 }
 
+func openAIRequestBodyMayContainInternalUnsupportedInputItemField(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if bytes.Contains(body, []byte("internal_chat_message_metadata_passthrough")) {
+		return true
+	}
+	// JSON 字符串任意字符都可能被 unicode escape，遇到 \u 时交给解码路径兜底。
+	return bytes.Contains(body, []byte("\\u"))
+}
+
 func openAIJSONValueMayContainEmptyBase64InputImage(value gjson.Result) bool {
 	if !value.Exists() {
 		return false
@@ -7604,6 +7632,96 @@ func sanitizeEmptyBase64InputImagesInOpenAIBody(body []byte) ([]byte, bool, erro
 		return body, false, fmt.Errorf("serialize sanitized request body: %w", err)
 	}
 	return normalized, true, nil
+}
+
+func sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIBody(body []byte) ([]byte, bool, error) {
+	if !openAIRequestBodyMayContainInternalUnsupportedInputItemField(body) {
+		return body, false, nil
+	}
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return body, false, fmt.Errorf("sanitize internal unsupported input fields: %w", err)
+	}
+	if !sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIRequestBodyMap(reqBody) {
+		return body, false, nil
+	}
+	normalized, err := marshalOpenAIUpstreamJSON(reqBody)
+	if err != nil {
+		return body, false, fmt.Errorf("serialize sanitized internal unsupported input fields: %w", err)
+	}
+	return normalized, true, nil
+}
+
+func sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIRequestBodyMap(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	input, ok := reqBody["input"]
+	if !ok {
+		return false
+	}
+	normalizedInput, changed := sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIInput(input)
+	if !changed {
+		return false
+	}
+	reqBody["input"] = normalizedInput
+	return true
+}
+
+func sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIInput(input any) (any, bool) {
+	switch items := input.(type) {
+	case []any:
+		changed := false
+		for i, item := range items {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if !sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIInputItem(itemMap) {
+				continue
+			}
+			items[i] = itemMap
+			changed = true
+		}
+		if !changed {
+			return input, false
+		}
+		return items, true
+	case []map[string]any:
+		changed := false
+		for i := range items {
+			if sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIInputItem(items[i]) {
+				changed = true
+			}
+		}
+		if !changed {
+			return input, false
+		}
+		return items, true
+	case map[string]any:
+		if !sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIInputItem(items) {
+			return input, false
+		}
+		return items, true
+	default:
+		return input, false
+	}
+}
+
+func sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIInputItem(item map[string]any) bool {
+	if item == nil {
+		return false
+	}
+	changed := false
+	for _, field := range openAIChatGPTInternalUnsupportedInputItemFields {
+		if _, exists := item[field]; !exists {
+			continue
+		}
+		delete(item, field)
+		changed = true
+	}
+	return changed
 }
 
 func sanitizeEmptyBase64InputImagesInOpenAIRequestBodyMap(reqBody map[string]any) bool {

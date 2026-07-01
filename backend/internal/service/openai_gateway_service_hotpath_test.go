@@ -751,3 +751,50 @@ func TestSanitizeEmptyBase64InputImagesInOpenAIBody(t *testing.T) {
 		]
 	}`, string(body))
 }
+
+func TestSanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIRequestBodyMap(t *testing.T) {
+	var reqBody map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"model":"gpt-5.3-codex",
+		"input":[
+			{
+				"role":"user",
+				"content":"hello",
+				"internal_chat_message_metadata_passthrough":{"trace_id":"abc"}
+			},
+			{
+				"type":"reasoning",
+				"encrypted_content":"gAAAAAB",
+				"internal_chat_message_metadata_passthrough":{"turn":2}
+			},
+			{"role":"assistant","content":"ok"}
+		]
+	}`), &reqBody))
+
+	require.True(t, sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIRequestBodyMap(reqBody))
+
+	normalized, err := json.Marshal(reqBody)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(normalized, "input.0.internal_chat_message_metadata_passthrough").Exists())
+	require.False(t, gjson.GetBytes(normalized, "input.1.internal_chat_message_metadata_passthrough").Exists())
+	require.Equal(t, "ok", gjson.GetBytes(normalized, "input.2.content").String())
+}
+
+func TestSanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIBody(t *testing.T) {
+	body, changed, err := sanitizeOpenAIInternalUnsupportedInputFieldsInOpenAIBody([]byte(`{
+		"model":"gpt-5.3-codex",
+		"stream":true,
+		"input":[
+			{
+				"role":"user",
+				"content":"hello",
+				"internal_chat_message_metadata_passthrough":{"trace_id":"abc"}
+			}
+		]
+	}`))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(body, "input.0.internal_chat_message_metadata_passthrough").Exists())
+	require.Equal(t, "hello", gjson.GetBytes(body, "input.0.content").String())
+	require.True(t, gjson.GetBytes(body, "stream").Bool())
+}
