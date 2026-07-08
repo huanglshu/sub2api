@@ -1,0 +1,44 @@
+# =============================================================================
+# Sub2API Ingress - External access configuration
+# =============================================================================
+# NOTE: Adjust the ingress class and TLS settings based on your cluster's
+# ingress controller (e.g., nginx, traefik, etc.)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sub2api
+  namespace: kube-ops
+  labels:
+    app.kubernetes.io/name: sub2api
+    app.kubernetes.io/component: application
+  annotations:
+    # Nginx Ingress Controller annotations (adjust for your ingress controller)
+    nginx.ingress.kubernetes.io/proxy-body-size: "256m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # WebSocket support (if needed)
+    nginx.ingress.kubernetes.io/websocket-services: "sub2api"
+    # SSL redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # H2C backend support
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  ingressClassName: nginx  # Adjust to your ingress class
+  tls:
+    - hosts:
+        - sub2api.example.com  # Replace with your domain
+      secretName: sub2api-tls  # Replace with your TLS secret
+  rules:
+    - host: sub2api.example.com  # Replace with your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sub2api
+                port:
+                  number: 8080

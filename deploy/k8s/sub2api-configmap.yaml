@@ -1,0 +1,144 @@
+# =============================================================================
+# Sub2API ConfigMap - Application configuration (kube-ops)
+# =============================================================================
+# Sub2API runs in kube-ops namespace, connecting to PostgreSQL and Redis
+# in kube-public namespace via cross-namespace service DNS.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sub2api-config
+  namespace: kube-ops
+  labels:
+    app.kubernetes.io/name: sub2api
+    app.kubernetes.io/component: config
+data:
+  # ---------------------------------------------------------------------------
+  # Server Configuration
+  # ---------------------------------------------------------------------------
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8080"
+  SERVER_MODE: "release"
+  RUN_MODE: "standard"
+  AUTO_SETUP: "true"
+
+  # ---------------------------------------------------------------------------
+  # Database Configuration (PostgreSQL - cross-namespace)
+  # ---------------------------------------------------------------------------
+  DATABASE_HOST: "postgres.kube-public.svc.cluster.local"
+  DATABASE_PORT: "5432"
+  DATABASE_USER: "admin"
+  DATABASE_DBNAME: "sub2api"
+  DATABASE_SSLMODE: "disable"
+  DATABASE_PASSWORD: "aofei123"
+  DATABASE_MAX_OPEN_CONNS: "256"
+  DATABASE_MAX_IDLE_CONNS: "128"
+  DATABASE_CONN_MAX_LIFETIME_MINUTES: "30"
+  DATABASE_CONN_MAX_IDLE_TIME_MINUTES: "5"
+
+  # ---------------------------------------------------------------------------
+  # Redis Configuration (cross-namespace)
+  # ---------------------------------------------------------------------------
+  REDIS_HOST: "redis01.kube-public.svc.cluster.local"
+  REDIS_PORT: "6379"
+  REDIS_DB: "5"
+  REDIS_POOL_SIZE: "4096"
+  REDIS_MIN_IDLE_CONNS: "256"
+  REDIS_ENABLE_TLS: "false"
+  REDIS_PASSWORD: "123456"
+
+  # ---------------------------------------------------------------------------
+  # Admin Account
+  # ---------------------------------------------------------------------------
+  ADMIN_EMAIL: "admin@auldey.com"
+  ADMIN_PASSWORD: "alpha@2026"
+
+  # ---------------------------------------------------------------------------
+  # JWT Configuration
+  # ---------------------------------------------------------------------------
+  JWT_EXPIRE_HOUR: "24"
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "0"
+  JWT_SECRET: "895567b361a797fef99aaab05f654009b5a6f818167b5bebdbd19b601d484387"
+
+  # ---------------------------------------------------------------------------
+  # Timezone
+  # ---------------------------------------------------------------------------
+  TZ: "Asia/Shanghai"
+
+  # ---------------------------------------------------------------------------
+  # TOTP (2FA) Configuration
+  # ---------------------------------------------------------------------------
+  TOTP_ENCRYPTION_KEY: "0e94c8063a4c6fb8ca7c7a3eb2429dc98adc95902d9c94b5928dd772483f460f"
+
+  # ---------------------------------------------------------------------------
+  # Security Configuration
+  # ---------------------------------------------------------------------------
+  SECURITY_URL_ALLOWLIST_ENABLED: "false"
+  SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP: "true"
+  SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS: "true"
+
+  # ---------------------------------------------------------------------------
+  # Gateway Scheduling
+  # ---------------------------------------------------------------------------
+  GATEWAY_FORCE_CODEX_CLI: "false"
+  GATEWAY_MAX_CONNS_PER_HOST: "2048"
+  GATEWAY_MAX_IDLE_CONNS: "8192"
+  GATEWAY_MAX_IDLE_CONNS_PER_HOST: "4096"
+  GATEWAY_SCHEDULING_STICKY_SESSION_MAX_WAITING: "3"
+  GATEWAY_SCHEDULING_STICKY_SESSION_WAIT_TIMEOUT: "120s"
+  GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT: "30s"
+  GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING: "100"
+  GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED: "true"
+  GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL: "30s"
+  GATEWAY_SCHEDULING_DB_FALLBACK_ENABLED: "true"
+  GATEWAY_SCHEDULING_DB_FALLBACK_TIMEOUT_SECONDS: "0"
+  GATEWAY_SCHEDULING_DB_FALLBACK_MAX_QPS: "0"
+  GATEWAY_SCHEDULING_OUTBOX_POLL_INTERVAL_SECONDS: "1"
+  GATEWAY_SCHEDULING_OUTBOX_LAG_WARN_SECONDS: "5"
+  GATEWAY_SCHEDULING_OUTBOX_LAG_REBUILD_SECONDS: "10"
+  GATEWAY_SCHEDULING_OUTBOX_LAG_REBUILD_FAILURES: "3"
+  GATEWAY_SCHEDULING_OUTBOX_BACKLOG_REBUILD_ROWS: "10000"
+  GATEWAY_SCHEDULING_FULL_REBUILD_INTERVAL_SECONDS: "300"
+
+  # ---------------------------------------------------------------------------
+  # Dashboard Aggregation
+  # ---------------------------------------------------------------------------
+  DASHBOARD_AGGREGATION_ENABLED: "true"
+  DASHBOARD_AGGREGATION_INTERVAL_SECONDS: "60"
+  DASHBOARD_AGGREGATION_LOOKBACK_SECONDS: "120"
+  DASHBOARD_AGGREGATION_BACKFILL_ENABLED: "false"
+  DASHBOARD_AGGREGATION_BACKFILL_MAX_DAYS: "31"
+  DASHBOARD_AGGREGATION_RECOMPUTE_DAYS: "2"
+  DASHBOARD_AGGREGATION_RETENTION_USAGE_LOGS_DAYS: "90"
+  DASHBOARD_AGGREGATION_RETENTION_HOURLY_DAYS: "180"
+  DASHBOARD_AGGREGATION_RETENTION_DAILY_DAYS: "730"
+
+  # ---------------------------------------------------------------------------
+  # Ops Monitoring
+  # ---------------------------------------------------------------------------
+  OPS_ENABLED: "true"
+
+  # ---------------------------------------------------------------------------
+  # Rate Limiting
+  # ---------------------------------------------------------------------------
+  RATE_LIMIT_OVERLOAD_COOLDOWN_MINUTES: "10"
+
+  # ---------------------------------------------------------------------------
+  # Logging Configuration
+  # ---------------------------------------------------------------------------
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  LOG_SERVICE_NAME: "sub2api"
+  LOG_ENV: "production"
+  LOG_CALLER: "true"
+  LOG_STACKTRACE_LEVEL: "error"
+  LOG_OUTPUT_TO_STDOUT: "true"
+  LOG_OUTPUT_TO_FILE: "true"
+  LOG_ROTATION_MAX_SIZE_MB: "100"
+  LOG_ROTATION_MAX_BACKUPS: "10"
+  LOG_ROTATION_MAX_AGE_DAYS: "7"
+  LOG_ROTATION_COMPRESS: "true"
+  LOG_ROTATION_LOCAL_TIME: "true"
+  LOG_SAMPLING_ENABLED: "false"
+  LOG_SAMPLING_INITIAL: "100"
+  LOG_SAMPLING_THEREAFTER: "100"

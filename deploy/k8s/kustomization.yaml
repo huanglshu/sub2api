@@ -1,0 +1,33 @@
+# =============================================================================
+# Sub2API Kustomization
+# =============================================================================
+# Usage:
+#   kubectl apply -k k8s/
+#
+# Or with overlays:
+#   kubectl apply -k k8s/overlays/production
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kube-public
+
+resources:
+  - configmap.yaml
+  - postgres.yaml
+  - sub2api-configmap.yaml
+  - sub2api.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/part-of: sub2api
+  app.kubernetes.io/managed-by: kustomize
+
+# Images for easy tag updates
+images:
+  - name: ghcr.io/wei-shaw/sub2api
+    newTag: 0.1.133
+  - name: harbor.gdalpha.com/alpha-tools/postgres
+    newTag: 18-alpine

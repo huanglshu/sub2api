@@ -1,0 +1,30 @@
+# =============================================================================
+# PostgreSQL ConfigMap - Only PostgreSQL server parameters (kube-public)
+# =============================================================================
+# Sub2API application has its own ConfigMap in kube-ops namespace.
+# This ConfigMap is only used by the PostgreSQL Deployment.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: kube-public
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: config
+data:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Server Parameters
+  # ---------------------------------------------------------------------------
+  POSTGRES_USER: "admin"
+  POSTGRES_DB: "sub2api"
+  POSTGRES_PASSWORD: "aofei123"
+  POSTGRES_MAX_CONNECTIONS: "1024"
+  POSTGRES_SHARED_BUFFERS: "1GB"
+  POSTGRES_EFFECTIVE_CACHE_SIZE: "4GB"
+  POSTGRES_MAINTENANCE_WORK_MEM: "128MB"
+
+  # ---------------------------------------------------------------------------
+  # Timezone
+  # ---------------------------------------------------------------------------
+  TZ: "Asia/Shanghai"

@@ -1,0 +1,103 @@
+# =============================================================================
+# Sub2API NetworkPolicy - Cross-namespace deployment
+# =============================================================================
+# PostgreSQL in kube-public, Sub2API in kube-ops
+# =============================================================================
+
+---
+# kube-public: Protect postgres - only allow ingress from kube-ops sub2api
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sub2api-postgres-allow
+  namespace: kube-public
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: sub2api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/component: database
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from sub2api in kube-ops
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-ops
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sub2api
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Allow intra-namespace (kube-public) for local access
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-public
+      ports:
+        - port: 5432
+          protocol: TCP
+
+---
+# kube-ops: Sub2API default policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sub2api-default
+  namespace: kube-ops
+  labels:
+    app.kubernetes.io/name: sub2api
+    app.kubernetes.io/part-of: sub2api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: sub2api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+    # Allow health checks from kube-system
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+  egress:
+    # Allow DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow connections to postgres in kube-public
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-public
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Allow connections to redis01 in kube-public
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-public
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Allow outbound HTTPS (for GitHub updates, OAuth, etc.)
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP

@@ -1,0 +1,125 @@
+# =============================================================================
+# Sub2API Application - Deployment + Service (kube-ops)
+# =============================================================================
+
+---
+# Sub2API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sub2api
+  namespace: kube-ops
+  labels:
+    app.kubernetes.io/name: sub2api
+    app.kubernetes.io/component: application
+    app.kubernetes.io/part-of: sub2api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sub2api
+      app.kubernetes.io/component: application
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sub2api
+        app.kubernetes.io/component: application
+        app.kubernetes.io/part-of: sub2api
+    spec:
+      hostAliases:
+        - ip: "192.168.0.146"
+          hostnames:
+            - "sub2api-2.gdalpha.com"
+      initContainers:
+        - name: wait-for-postgres
+          image: harbor.gdalpha.com/alpha-tools/postgres:18-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres.kube-public.svc.cluster.local -p 5432 -U admin -d sub2api; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready"
+      containers:
+        - name: sub2api
+          image: ghcr.io/wei-shaw/sub2api:0.1.133
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: sub2api-config
+          volumeMounts:
+            - name: nfs-storage
+              mountPath: /app/data
+              subPath: sub2api
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: nfs-storage
+          nfs:
+            server: 10.10.15.37
+            path: /opt/app-data
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: sub2api
+                topologyKey: kubernetes.io/hostname
+
+---
+# Application Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: sub2api
+  namespace: kube-ops
+  labels:
+    app.kubernetes.io/name: sub2api
+    app.kubernetes.io/component: application
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sub2api
+    app.kubernetes.io/component: application
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
