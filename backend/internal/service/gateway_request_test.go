@@ -1605,3 +1605,57 @@ func TestNormalizeGLMOpenAIReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeUpstreamSequentialCutoff(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "replaces sequential_cutoff",
+			input: `{"tool_choice":"sequential_cutoff"}`,
+			want:  `{"tool_choice":"sequential"}`,
+		},
+		{
+			name:  "replaces nested sequential_cutoff",
+			input: `{"reasoning":{"effort":"sequential_cutoff"}}`,
+			want:  `{"reasoning":{"effort":"sequential"}}`,
+		},
+		{
+			name:  "no change for sequential",
+			input: `{"tool_choice":"sequential"}`,
+			want:  `{"tool_choice":"sequential"}`,
+		},
+		{
+			name:  "no change for concurrent",
+			input: `{"tool_choice":"concurrent"}`,
+			want:  `{"tool_choice":"concurrent"}`,
+		},
+		{
+			name:  "no change for concurrent_cutoff",
+			input: `{"tool_choice":"concurrent_cutoff"}`,
+			want:  `{"tool_choice":"concurrent_cutoff"}`,
+		},
+		{
+			name:  "no change when sequential_cutoff is part of larger string",
+			input: `{"tool_choice":"my_sequential_cutoff_value"}`,
+			want:  `{"tool_choice":"my_sequential_cutoff_value"}`,
+		},
+		{
+			name:  "empty body",
+			input: ``,
+			want:  ``,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeUpstreamSequentialCutoff([]byte(tt.input))
+			if string(got) != tt.want {
+				t.Errorf("normalizeUpstreamSequentialCutoff() = %q, want %q", string(got), tt.want)
+			}
+		})
+	}
+}
+

@@ -505,10 +505,27 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 // normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
 // 1) 删除 ChatGPT internal API 不支持的顶层 Responses 参数
 // 2) store=false 3) 非 compact 保持 stream=true；compact 强制 stream=false
+// normalizeUpstreamSequentialCutoff replaces the legacy value "sequential_cutoff"
+// with "sequential" in the request body. The upstream API only accepts
+// "sequential", "concurrent", and "concurrent_cutoff" as valid values.
+func normalizeUpstreamSequentialCutoff(body []byte) []byte {
+	if bytes.Contains(body, []byte(`"sequential_cutoff"`)) {
+		return bytes.ReplaceAll(body, []byte(`"sequential_cutoff"`), []byte(`"sequential"`))
+	}
+	return body
+}
+
+
 func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
+
+	// Normalize legacy "sequential_cutoff" value to "sequential" for upstream
+	// compatibility. The Codex client may send "sequential_cutoff" which is not
+	// a valid value for the upstream API.
+	body = normalizeUpstreamSequentialCutoff(body)
+
 
 	normalized := body
 	changed := false

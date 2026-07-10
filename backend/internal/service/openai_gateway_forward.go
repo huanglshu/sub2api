@@ -35,6 +35,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
 
+	// Normalize legacy "sequential_cutoff" value to "sequential" for upstream
+	// compatibility with the upstream API.
+	body = normalizeUpstreamSequentialCutoff(body)
+
+
 	normalizedBody, normalized, err := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
 	if err != nil {
 		return nil, err
