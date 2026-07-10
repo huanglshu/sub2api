@@ -152,6 +152,76 @@ func TestOpenAIGatewayServiceForward_ExplicitImageToolWorksWithBridgeDisabled(t 
 	require.NotContains(t, instructions, "image_generation")
 }
 
+func TestOpenAIGatewayServiceForward_StripsReservedNamespaceTools(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_reserved_namespace","model":"gpt-5.6-terra","usage":{"input_tokens":2,"output_tokens":1}}`)),
+		},
+	}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestAccount()
+	body := []byte(`{
+		"model":"gpt-5.6-terra",
+		"input":"write code",
+		"stream":false,
+		"tools":[
+			{"type":"namespace","name":"collaboration"},
+			{"type":"function","name":"shell","parameters":{"type":"object"}}
+		],
+		"tool_choice":{"type":"namespace","name":"collaboration"}
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="collaboration")`).Exists())
+	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="function")`).Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "tool_choice").Exists())
+}
+
+func TestOpenAIGatewayServiceForward_StripsReservedNamespaceToolsFromAdditionalToolsInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_reserved_namespace_input","model":"gpt-5.6-terra","usage":{"input_tokens":2,"output_tokens":1}}`)),
+		},
+	}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestAccount()
+	body := []byte(`{
+		"model":"gpt-5.6-terra",
+		"input":[
+			{
+				"type":"additional_tools",
+				"tools":[
+					{"type":"namespace","name":"collaboration"},
+					{"type":"function","name":"shell","parameters":{"type":"object"}}
+				]
+			}
+		],
+		"stream":false
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, gjson.GetBytes(upstream.lastBody, `input.0.tools.#(name=="collaboration")`).Exists())
+	require.True(t, gjson.GetBytes(upstream.lastBody, `input.0.tools.#(type=="function")`).Exists())
+}
+
 func TestOpenAIGatewayServiceForward_AccountPolicyStripsExplicitImageTool(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -29,6 +29,14 @@ func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
 	require.Equal(t, "hi", gjson.GetBytes(body, "input").String())
 }
 
+func TestPrepareOpenAIWSHTTPBridgeBodyStripsReservedNamespaceTools(t *testing.T) {
+	body, err := prepareOpenAIWSHTTPBridgeBody([]byte(`{"type":"response.create","model":"gpt-5.6-terra","tools":[{"type":"namespace","name":"collaboration"},{"type":"function","name":"shell","parameters":{"type":"object"}}],"tool_choice":{"type":"namespace","name":"collaboration"}}`))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(body, `tools.#(name=="collaboration")`).Exists())
+	require.True(t, gjson.GetBytes(body, `tools.#(name=="shell")`).Exists())
+	require.False(t, gjson.GetBytes(body, "tool_choice").Exists())
+}
+
 func TestOpenAIWSHTTPBridgeDecisionKeepsSmallFramesOnWS(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{

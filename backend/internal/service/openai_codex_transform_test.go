@@ -519,6 +519,66 @@ func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunction
 	require.Equal(t, "bash", first["name"])
 }
 
+func TestApplyCodexOAuthTransform_StripsReservedNamespaceTools(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.6-terra",
+		"input": "hello",
+		"tools": []any{
+			map[string]any{"type": "namespace", "name": "collaboration"},
+			map[string]any{"type": "function", "name": "shell", "parameters": map[string]any{"type": "object"}},
+		},
+		"tool_choice": map[string]any{"type": "namespace", "name": "collaboration"},
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, false)
+	require.True(t, result.Modified)
+
+	tools, ok := reqBody["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+
+	first, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "function", first["type"])
+	require.Equal(t, "shell", first["name"])
+
+	_, hasToolChoice := reqBody["tool_choice"]
+	require.False(t, hasToolChoice)
+}
+
+func TestApplyCodexOAuthTransform_StripsReservedNamespaceToolsFromAdditionalToolsInput(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.6-terra",
+		"input": []any{
+			map[string]any{
+				"type": "additional_tools",
+				"tools": []any{
+					map[string]any{"type": "namespace", "name": "collaboration"},
+					map[string]any{"type": "function", "name": "shell", "parameters": map[string]any{"type": "object"}},
+				},
+			},
+		},
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, false)
+	require.True(t, result.Modified)
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+
+	item, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	tools, ok := item["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+
+	first, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "function", first["type"])
+	require.Equal(t, "shell", first["name"])
+}
+
 func TestNormalizeOpenAIResponsesImageGenerationTools_RewritesLegacyFields(t *testing.T) {
 	reqBody := map[string]any{
 		"tools": []any{

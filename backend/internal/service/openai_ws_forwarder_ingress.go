@@ -277,6 +277,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				logOpenAIWSModeInfo("ingress_ws_codex_image_tool_stripped_by_policy account_id=%d", account.ID)
 			}
 		}
+		if bytes.Contains(normalized, []byte(`"collaboration"`)) && bytes.Contains(normalized, []byte(`"namespace"`)) {
+			if stripped, changed, stripErr := stripReservedOpenAINamespaceToolsFromRawPayload(normalized); stripErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", stripErr)
+			} else if changed {
+				normalized = stripped
+				logOpenAIWSModeInfo("ingress_ws_reserved_namespace_tool_stripped account_id=%d", account.ID)
+			}
+		}
 		if stripped, changed, stripErr := stripCodexSparkImageGenerationToolFromRawPayload(normalized, upstreamModel); stripErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", stripErr)
 		} else if changed {

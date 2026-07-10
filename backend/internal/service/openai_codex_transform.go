@@ -208,6 +208,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if normalizeCodexTools(reqBody) {
 		result.Modified = true
 	}
+	if stripReservedOpenAINamespaceTools(reqBody) {
+		result.Modified = true
+	}
 	if normalizeCodexToolChoice(reqBody) {
 		result.Modified = true
 	}
@@ -629,6 +632,122 @@ func toolsContainImageGeneration(rawTools any) bool {
 func isImageGenNamespaceToolMap(tool map[string]any) bool {
 	return strings.TrimSpace(firstNonEmptyString(tool["type"])) == "namespace" &&
 		strings.TrimSpace(firstNonEmptyString(tool["name"])) == "image_gen"
+}
+
+var reservedOpenAINamespaceTools = map[string]struct{}{
+	"collaboration": {},
+}
+
+func isReservedOpenAINamespaceToolMap(tool map[string]any) bool {
+	if strings.TrimSpace(firstNonEmptyString(tool["type"])) != "namespace" {
+		return false
+	}
+	_, reserved := reservedOpenAINamespaceTools[strings.TrimSpace(firstNonEmptyString(tool["name"]))]
+	return reserved
+}
+
+func openAIAnyToolChoiceSelectsReservedNamespace(rawChoice any) bool {
+	choiceMap, ok := rawChoice.(map[string]any)
+	if !ok {
+		return false
+	}
+	if strings.TrimSpace(firstNonEmptyString(choiceMap["type"])) != "namespace" {
+		return false
+	}
+	_, reserved := reservedOpenAINamespaceTools[strings.TrimSpace(firstNonEmptyString(choiceMap["name"]))]
+	return reserved
+}
+
+func stripReservedOpenAINamespaceTools(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+
+	modified := stripReservedOpenAINamespaceToolsInValue(reqBody)
+
+	if openAIAnyToolChoiceSelectsReservedNamespace(reqBody["tool_choice"]) {
+		delete(reqBody, "tool_choice")
+		modified = true
+	}
+	return modified
+}
+
+func stripReservedOpenAINamespaceToolsInValue(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		return stripReservedOpenAINamespaceToolsInMap(typed)
+	case []any:
+		return stripReservedOpenAINamespaceToolsInArray(typed)
+	default:
+		return false
+	}
+}
+
+func stripReservedOpenAINamespaceToolsInMap(item map[string]any) bool {
+	modified := false
+	for key, rawValue := range item {
+		if key == "tools" {
+			filtered, changed := filterReservedOpenAINamespaceToolArray(rawValue)
+			if changed {
+				if len(filtered) == 0 {
+					delete(item, key)
+				} else {
+					item[key] = filtered
+				}
+				modified = true
+			}
+			continue
+		}
+
+		if stripReservedOpenAINamespaceToolsInValue(rawValue) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func stripReservedOpenAINamespaceToolsInArray(items []any) bool {
+	modified := false
+	for _, item := range items {
+		if stripReservedOpenAINamespaceToolsInValue(item) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func filterReservedOpenAINamespaceToolArray(rawTools any) ([]any, bool) {
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	filtered := make([]any, 0, len(tools))
+	removed := false
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if ok && isReservedOpenAINamespaceToolMap(toolMap) {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, rawTool)
+	}
+	return filtered, removed
+}
+
+func stripReservedOpenAINamespaceToolsFromRawPayload(payload []byte) ([]byte, bool, error) {
+	payloadMap := make(map[string]any)
+	if err := json.Unmarshal(payload, &payloadMap); err != nil {
+		return payload, false, err
+	}
+	if !stripReservedOpenAINamespaceTools(payloadMap) {
+		return payload, false, nil
+	}
+	rebuilt, err := json.Marshal(payloadMap)
+	if err != nil {
+		return payload, false, err
+	}
+	return rebuilt, true, nil
 }
 
 func inputContainsImageGenNamespace(rawInput any) bool {

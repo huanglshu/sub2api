@@ -301,6 +301,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			markDecodedModified()
 		}
 	}
+	if bytes.Contains(body, []byte(`"collaboration"`)) && bytes.Contains(body, []byte(`"namespace"`)) {
+		decoded, decodeErr := ensureReqBody()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if stripReservedOpenAINamespaceTools(decoded) {
+			markDecodedModified()
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped reserved namespace tools from /responses request model=%s account=%s", upstreamModel, account.Name)
+		}
+	}
 
 	if account.Type == AccountTypeOAuth {
 		decoded, decodeErr := ensureReqBody()
