@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
 )
 
 var codexModelMap = map[string]string{
@@ -1131,6 +1132,65 @@ func normalizeOpenAIResponsesImageOnlyModel(reqBody map[string]any) bool {
 	}
 	reqBody["model"] = openAIImagesResponsesMainModel
 	return modified
+}
+
+func applyOpenAIResponsesImageGenerationModelMapping(reqBody map[string]any, account *Account) (string, bool) {
+	if len(reqBody) == 0 || account == nil || !hasOpenAIImageGenerationTool(reqBody) {
+		return "", false
+	}
+
+	modified := false
+	mappedTopModel := ""
+	if model := strings.TrimSpace(firstNonEmptyString(reqBody["model"])); model != "" {
+		mapped := strings.TrimSpace(account.GetMappedModel(model))
+		if mapped != "" {
+			mappedTopModel = mapped
+			if mapped != model {
+				reqBody["model"] = mapped
+				modified = true
+			}
+		}
+	}
+
+	tools, _ := reqBody["tools"].([]any)
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
+			continue
+		}
+		model := strings.TrimSpace(firstNonEmptyString(toolMap["model"]))
+		if model == "" {
+			continue
+		}
+		mapped := strings.TrimSpace(account.GetMappedModel(model))
+		if mapped == "" || mapped == model {
+			continue
+		}
+		toolMap["model"] = mapped
+		modified = true
+	}
+
+	return mappedTopModel, modified
+}
+
+func resolveAzureOpenAIResponsesImageDeployment(account *Account, body []byte) string {
+	if account == nil || account.Type != AccountTypeAPIKey || !strings.Contains(strings.ToLower(account.GetOpenAIBaseURL()), "azure.com") {
+		return ""
+	}
+
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return ""
+	}
+	deployment := ""
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if strings.TrimSpace(tool.Get("type").String()) != "image_generation" {
+			return true
+		}
+		deployment = strings.TrimSpace(tool.Get("model").String())
+		return deployment == ""
+	})
+	return deployment
 }
 
 func normalizeOpenAIModelForUpstream(account *Account, model string) string {

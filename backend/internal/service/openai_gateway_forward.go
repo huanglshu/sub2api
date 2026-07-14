@@ -39,7 +39,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// compatibility with the upstream API.
 	body = normalizeUpstreamSequentialCutoff(body)
 
-
 	normalizedBody, normalized, err := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
 	if err != nil {
 		return nil, err
@@ -205,7 +204,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
 	}
 
-	billingModel := account.GetMappedModel(reqModel)
+	deferImageOnlyModelMapping := imageIntent && isOpenAIImageGenerationModel(reqModel)
+	billingModel := reqModel
+	if !deferImageOnlyModelMapping {
+		billingModel = account.GetMappedModel(reqModel)
+	}
 	if billingModel != reqModel {
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, billingModel, account.Name, isCodexCLI)
 		reqModel = billingModel
@@ -273,6 +276,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				upstreamModel = strings.TrimSpace(model)
 			}
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image-only model request inbound_model=%s image_model=%s upstream_model=%s", requestView.Model, billingModel, upstreamModel)
+		}
+		if mappedModel, mapped := applyOpenAIResponsesImageGenerationModelMapping(decoded, account); mapped {
+			markDecodedModified()
+			if mappedModel != "" {
+				upstreamModel = mappedModel
+				reqModel = mappedModel
+			}
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Applied /responses image_generation model mapping inbound_model=%s upstream_model=%s account=%s", requestView.Model, upstreamModel, account.Name)
 		}
 		if err := validateOpenAIResponsesImageModel(decoded, upstreamModel); err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
@@ -705,6 +716,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		releaseUpstreamCtx()
 		if err != nil {
 			return nil, err
+		}
+		if imageDeployment := resolveAzureOpenAIResponsesImageDeployment(account, body); imageDeployment != "" {
+			upstreamReq.Header.Set("x-ms-oai-image-generation-deployment", imageDeployment)
 		}
 
 		// Get proxy URL

@@ -1628,10 +1628,13 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
 
 	payload := map[string]any{
-		"model":           modelID,
-		"prompt":          prompt,
-		"n":               1,
-		"response_format": "b64_json",
+		"model":  modelID,
+		"prompt": prompt,
+		"n":      1,
+	}
+	// Azure OpenAI does not support response_format on images endpoints.
+	if !strings.Contains(normalizedBaseURL, "azure.com") {
+		payload["response_format"] = "b64_json"
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -1666,10 +1669,11 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
-	// Parse {"data": [{"b64_json": "...", "revised_prompt": "..."}]}
+	// Parse {"data": [{"b64_json": "...", "url": "...", "revised_prompt": "..."}]}
 	var result struct {
 		Data []struct {
 			B64JSON       string `json:"b64_json"`
+			URL           string `json:"url"`
 			RevisedPrompt string `json:"revised_prompt"`
 		} `json:"data"`
 	}
@@ -1689,6 +1693,13 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 			s.sendEvent(c, TestEvent{
 				Type:     "image",
 				ImageURL: "data:image/png;base64," + item.B64JSON,
+				MimeType: "image/png",
+			})
+		}
+		if item.URL != "" {
+			s.sendEvent(c, TestEvent{
+				Type:     "image",
+				ImageURL: item.URL,
 				MimeType: "image/png",
 			})
 		}

@@ -596,6 +596,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
+
+	// Azure OpenAI does not support the response_format parameter on images endpoints.
+	if strings.Contains(account.GetOpenAIBaseURL(), "azure.com") {
+		forwardBody, _ = sjson.DeleteBytes(forwardBody, "response_format")
+	}
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, parsed.Stream)
 	defer releaseUpstreamCtx()
 
