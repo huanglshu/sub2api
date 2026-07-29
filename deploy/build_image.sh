@@ -16,7 +16,9 @@ echo "IMAGE_NAME: ${IMAGE_NAME}"
 docker build -t ${IMAGE_NAME} \
     --build-arg GOPROXY=https://goproxy.cn,direct \
     --build-arg GOSUMDB=sum.golang.google.cn \
-    --build-arg NODE_IMAGE=node:20-alpine \
+    --build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
+    --build-arg NODE_IMAGE=harbor.gdalpha.com/alpha-tools/nodejs:24.14.0-alpine3.23 \
+    --build-arg GOLANG_IMAGE=harbor.gdalpha.com/alpha-tools/golang:1.26.5-alpine \
     -f "${REPO_ROOT}/Dockerfile" \
     "${REPO_ROOT}"
 docker push ${IMAGE_NAME}
