@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -597,7 +598,12 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		parsed.Endpoint,
 		account.Type,
 	)
-	forwardBody, forwardContentType, err := rewriteOpenAIImagesModel(body, parsed.ContentType, upstreamModel)
+	forwardBody, forwardContentType, err := rewriteOpenAIImagesModel(
+		body,
+		parsed.ContentType,
+		upstreamModel,
+		openAIImagesResponseFormatUnsupported(account.GetOpenAIBaseURL()),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -791,24 +797,36 @@ func buildOpenAIImagesURL(base string, endpoint string) string {
 	return buildOpenAIEndpointURL(base, endpoint)
 }
 
-func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]byte, string, error) {
+func openAIImagesResponseFormatUnsupported(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	return hostname == "aigateway.edgecloudapp.com" || strings.HasSuffix(hostname, ".azure.com")
+}
+
+func rewriteOpenAIImagesModel(body []byte, contentType string, model string, omitResponseFormat bool) ([]byte, string, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return body, contentType, nil
 	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		rewrittenBody, rewrittenType, rewriteErr := rewriteOpenAIImagesMultipartModel(body, contentType, model)
+		rewrittenBody, rewrittenType, rewriteErr := rewriteOpenAIImagesMultipartModel(body, contentType, model, omitResponseFormat)
 		return rewrittenBody, rewrittenType, rewriteErr
 	}
 	rewritten, err := sjson.SetBytes(body, "model", model)
 	if err != nil {
 		return nil, "", fmt.Errorf("rewrite image request model: %w", err)
 	}
+	if omitResponseFormat {
+		rewritten, _ = sjson.DeleteBytes(rewritten, "response_format")
+	}
 	return rewritten, contentType, nil
 }
 
-func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model string) ([]byte, string, error) {
+func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model string, omitResponseFormat bool) ([]byte, string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
@@ -833,6 +851,10 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 		}
 
 		formName := strings.TrimSpace(part.FormName())
+		if omitResponseFormat && formName == "response_format" && part.FileName() == "" {
+			_ = part.Close()
+			continue
+		}
 		partHeader := cloneMultipartHeader(part.Header)
 		target, err := writer.CreatePart(partHeader)
 		if err != nil {

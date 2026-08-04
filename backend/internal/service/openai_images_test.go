@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,25 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSON(t *testing.T) {
 	require.False(t, parsed.Multipart)
 }
 
+func TestOpenAIImagesResponseFormatUnsupported(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{name: "azure", baseURL: "https://example.openai.azure.com/openai/v1", want: true},
+		{name: "edgecloud", baseURL: "https://aigateway.edgecloudapp.com/v1/account/gpt-image-2", want: true},
+		{name: "ordinary upstream", baseURL: "https://image-upstream.example/v1", want: false},
+		{name: "edgecloud suffix", baseURL: "https://aigateway.edgecloudapp.com.attacker.example/v1", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIImagesResponseFormatUnsupported(tt.baseURL))
+		})
+	}
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -90,6 +110,26 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T
 	require.Equal(t, "2K", parsed.SizeTier)
 	require.Len(t, parsed.Uploads, 1)
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
+}
+
+func TestRewriteOpenAIImagesMultipartModelOmitsResponseFormat(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
+	require.NoError(t, writer.WriteField("response_format", "b64_json"))
+	require.NoError(t, writer.WriteField("prompt", "replace background"))
+	require.NoError(t, writer.Close())
+
+	rewritten, contentType, err := rewriteOpenAIImagesMultipartModel(body.Bytes(), writer.FormDataContentType(), "mapped-image-model", true)
+	require.NoError(t, err)
+
+	_, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	form, err := multipart.NewReader(bytes.NewReader(rewritten), params["boundary"]).ReadForm(1 << 20)
+	require.NoError(t, err)
+	require.Equal(t, []string{"mapped-image-model"}, form.Value["model"])
+	require.NotContains(t, form.Value, "response_format")
+	require.Equal(t, []string{"replace background"}, form.Value["prompt"])
 }
 
 func TestOpenAIImagesRequestModerationBody_JSONEditIncludesInputImageURLs(t *testing.T) {
@@ -1175,8 +1215,96 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseU
 	require.Equal(t, "Bearer test-api-key", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Content-Type"))
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "aGVsbG8=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
+}
+
+func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationOmitsResponseFormatForAzure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{},
+		httpUpstream: &httpUpstreamRecorder{
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"created":1710000007,"data":[{"b64_json":"aGVsbG8="}]}`)),
+			},
+		},
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:       61,
+		Name:     "azure-openai-apikey",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://example.openai.azure.com/openai/v1",
+		},
+	}
+
+	_, err = svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.NoError(t, err)
+
+	upstream, ok := svc.httpUpstream.(*httpUpstreamRecorder)
+	require.True(t, ok)
+	require.Equal(t, "https://example.openai.azure.com/openai/v1/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "response_format").Exists())
+}
+
+func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationOmitsResponseFormatForEdgeCloud(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{},
+		httpUpstream: &httpUpstreamRecorder{
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"created":1710000007,"data":[{"b64_json":"aGVsbG8="}]}`)),
+			},
+		},
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:       63,
+		Name:     "edgecloud-openai-apikey",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://aigateway.edgecloudapp.com/v1/account/gpt-image-2",
+		},
+	}
+
+	_, err = svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	require.NoError(t, err)
+
+	upstream, ok := svc.httpUpstream.(*httpUpstreamRecorder)
+	require.True(t, ok)
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "response_format").Exists())
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyStreamJSONResponseBillsImage(t *testing.T) {
