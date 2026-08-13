@@ -44,7 +44,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// compatibility with the upstream API.
 	body = normalizeUpstreamSequentialCutoff(body)
 
-
 	normalizedBody, normalized, err := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
 	if err != nil {
 		return nil, err
@@ -61,6 +60,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	if toolSchemaSanitized {
 		body = sanitizedToolBody
+	}
+	// Codex 0.147.0 may omit or empty description in input.additional_tools.
+	// The upstream requires each runtime tool to have a non-empty description.
+	sanitizedDescriptionBody, descriptionsSanitized, descriptionErr := ensureCodexToolDescriptionsFromRawPayload(body)
+	if descriptionErr != nil {
+		return nil, fmt.Errorf("sanitize OpenAI Responses tool descriptions: %w", descriptionErr)
+	}
+	if descriptionsSanitized {
+		body = sanitizedDescriptionBody
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added fallback descriptions to Responses runtime tools account=%s", account.Name)
 	}
 	if account.IsOpenAIOAuth() && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
 		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)

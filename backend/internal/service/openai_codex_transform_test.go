@@ -628,6 +628,46 @@ func TestApplyCodexOAuthTransform_NormalizeCodexTools_PreservesResponsesFunction
 	require.Equal(t, "bash", first["name"])
 }
 
+func TestApplyCodexOAuthTransform_EnsuresToolDescriptions(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.6-terra",
+		"input": []any{
+			map[string]any{
+				"type": "additional_tools",
+				"tools": []any{
+					map[string]any{"type": "function", "name": "exec", "description": "", "parameters": map[string]any{"type": "object"}},
+					map[string]any{"type": "namespace", "name": "team", "tools": []any{
+						map[string]any{"type": "function", "name": "send", "description": "  "},
+					}},
+				},
+			},
+		},
+		"tools": []any{
+			map[string]any{"type": "function", "name": "keep", "description": "Keeps its description"},
+		},
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, false)
+	require.True(t, result.Modified)
+
+	input := reqBody["input"].([]any)
+	additional := input[0].(map[string]any)
+	tools := additional["tools"].([]any)
+	require.Equal(t, "Executes the exec tool.", tools[0].(map[string]any)["description"])
+	nested := tools[1].(map[string]any)["tools"].([]any)[0].(map[string]any)
+	require.Equal(t, "Executes the send tool.", nested["description"])
+	require.Equal(t, "Keeps its description", reqBody["tools"].([]any)[0].(map[string]any)["description"])
+}
+
+func TestEnsureCodexToolDescriptionsFromRawPayload(t *testing.T) {
+	payload := []byte(`{"model":"gpt-5.6-terra","input":[{"type":"additional_tools","tools":[{"type":"function","name":"exec","description":""}]}]}`)
+
+	updated, changed, err := ensureCodexToolDescriptionsFromRawPayload(payload)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.JSONEq(t, `{"model":"gpt-5.6-terra","input":[{"type":"additional_tools","tools":[{"type":"function","name":"exec","description":"Executes the exec tool."}]}]}`, string(updated))
+}
+
 func TestApplyCodexOAuthTransform_StripsReservedNamespaceTools(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.6-terra",

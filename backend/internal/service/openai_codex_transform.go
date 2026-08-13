@@ -241,6 +241,12 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if normalizeCodexTools(reqBody) {
 		result.Modified = true
 	}
+	// Codex 0.147.0 can emit an empty description on runtime tools carried by
+	// input.additional_tools. This upstream requires every such tool to have a
+	// non-empty description, so normalize both absent and empty values.
+	if ensureCodexToolDescriptions(reqBody) {
+		result.Modified = true
+	}
 	if stripReservedOpenAINamespaceTools(reqBody) {
 		result.Modified = true
 	}
@@ -313,6 +319,80 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	}
 
 	return result
+}
+
+// ensureCodexToolDescriptions supplies a fallback only for missing or empty
+// tool descriptions. It deliberately leaves JSON-schema property descriptions
+// untouched because those describe tool arguments rather than the tool itself.
+func ensureCodexToolDescriptions(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+
+	modified := ensureCodexToolDescriptionsInList(reqBody["tools"])
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return modified
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "additional_tools" {
+			continue
+		}
+		if ensureCodexToolDescriptionsInList(item["tools"]) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func ensureCodexToolDescriptionsInList(rawTools any) bool {
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		description, hasDescription := tool["description"].(string)
+		if !hasDescription || strings.TrimSpace(description) == "" {
+			tool["description"] = codexToolFallbackDescription(tool)
+			modified = true
+		}
+		if ensureCodexToolDescriptionsInList(tool["tools"]) {
+			modified = true
+		}
+		if ensureCodexToolDescriptionsInList(tool["children"]) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func codexToolFallbackDescription(tool map[string]any) string {
+	if name := strings.TrimSpace(firstNonEmptyString(tool["name"])); name != "" {
+		return "Executes the " + name + " tool."
+	}
+	return "Executes a Codex runtime tool."
+}
+
+func ensureCodexToolDescriptionsFromRawPayload(payload []byte) ([]byte, bool, error) {
+	requestBody := make(map[string]any)
+	if err := json.Unmarshal(payload, &requestBody); err != nil {
+		return payload, false, err
+	}
+	if !ensureCodexToolDescriptions(requestBody) {
+		return payload, false, nil
+	}
+	rebuilt, err := json.Marshal(requestBody)
+	if err != nil {
+		return payload, false, err
+	}
+	return rebuilt, true, nil
 }
 
 func normalizeCodexToolChoice(reqBody map[string]any) bool {
