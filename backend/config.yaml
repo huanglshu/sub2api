@@ -1,0 +1,14 @@
+database:
+  host: "172.30.60.139"
+  port: 8015
+  user: "admin"
+  password: "123456"
+  dbname: "sub2api"
+  sslmode: "disable"
+
+redis:
+  host: "172.30.60.139"
+  port: 8014
+  password: "123456"
+  db: 0
+  enable_tls: false
