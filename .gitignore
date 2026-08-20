@@ -146,3 +146,7 @@ output/
 
 # Vitest / Vite cache at repo root
 .vite/
+
+!docs/LOCAL_DEVELOPMENT_CN.md
+
+!frontend/.env.local
