@@ -133,6 +133,15 @@ export async function getById(id: number): Promise<Account> {
 }
 
 /**
+ * Reveal an account's stored upstream API key. The backend requires step-up
+ * verification and audits every successful or failed read.
+ */
+export async function getAPIKey(id: number): Promise<string> {
+  const { data } = await apiClient.get<{ api_key: string }>(`/admin/accounts/${id}/api-key`)
+  return data.api_key
+}
+
+/**
  * Create new account
  * @param accountData - Account data
  * @returns Created account
@@ -989,6 +998,7 @@ export const accountsAPI = {
   list,
   listWithEtag,
   getById,
+  getAPIKey,
   create,
   duplicate,
   update,

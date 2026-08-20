@@ -59,7 +59,7 @@ docker-compose.override.yml
 # IDE / 编辑器
 # ===================
 .idea/
-.vscode/
+# .vscode/
 *.swp
 *.swo
 *~

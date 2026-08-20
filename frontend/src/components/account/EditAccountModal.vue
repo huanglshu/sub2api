@@ -120,26 +120,47 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
-          <input
-            v-model="editApiKey"
-            type="password"
-            class="input font-mono"
-            autocomplete="new-password"
-            data-1p-ignore
-            data-lpignore="true"
-            data-bwignore="true"
-            :placeholder="
-              account.platform === 'openai'
-                ? 'sk-proj-...'
-                : account.platform === 'gemini'
-                  ? 'AIza...'
-                  : account.platform === 'antigravity'
-                    ? 'sk-...'
-                    : account.platform === 'grok'
-                      ? 'xai-...'
-                      : 'sk-ant-...'
-            "
-          />
+          <div class="relative">
+            <span
+              v-if="hasStoredApiKey && !editApiKey && !apiKeyVisible"
+              class="pointer-events-none absolute inset-y-0 left-3 right-12 flex items-center overflow-hidden whitespace-nowrap font-mono text-gray-900 dark:text-gray-100"
+              aria-hidden="true"
+            >
+              &#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;
+            </span>
+            <input
+              v-model="editApiKey"
+              :type="apiKeyVisible ? 'text' : 'password'"
+              :class="[
+                'input pr-11 font-mono',
+                { 'placeholder:text-transparent': hasStoredApiKey && !editApiKey && !apiKeyVisible }
+              ]"
+              autocomplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore="true"
+              :placeholder="
+                account.platform === 'openai'
+                  ? 'sk-proj-...'
+                  : account.platform === 'gemini'
+                    ? 'AIza...'
+                    : account.platform === 'antigravity'
+                      ? 'sk-...'
+                      : account.platform === 'grok'
+                        ? 'xai-...'
+                        : 'sk-ant-...'
+              "
+            />
+            <button
+              type="button"
+              class="btn btn-secondary absolute right-1 top-1/2 -translate-y-1/2 p-1.5"
+              :disabled="apiKeyLoading"
+              :title="apiKeyVisible ? '隐藏 API Key' : '显示已保存的 API Key'"
+              @click="toggleStoredApiKey"
+            >
+              <Icon :name="apiKeyVisible ? 'eyeOff' : 'eye'" size="sm" />
+            </button>
+          </div>
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
 
@@ -2772,6 +2793,7 @@
     @confirm="handleMixedChannelConfirm"
     @cancel="handleMixedChannelCancel"
   />
+  <TotpStepUpDialog :controller="apiKeyStepUp" />
 </template>
 
 <script setup lang="ts">
@@ -2796,6 +2818,8 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
+import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -2905,6 +2929,41 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const apiKeyVisible = ref(false)
+const apiKeyLoading = ref(false)
+const apiKeyStepUp = useStepUp()
+const hasStoredApiKey = computed(() => {
+  if (!props.account) return false
+  const credentials = (props.account.credentials as Record<string, unknown>) || {}
+  return props.account.credentials_status?.has_api_key ?? Boolean(credentials.api_key)
+})
+
+async function toggleStoredApiKey() {
+  if (apiKeyVisible.value) {
+    apiKeyVisible.value = false
+    return
+  }
+  if (!props.account || apiKeyLoading.value) return
+
+  apiKeyLoading.value = true
+  try {
+    editApiKey.value = await apiKeyStepUp.run(() => adminAPI.accounts.getAPIKey(props.account!.id))
+    apiKeyVisible.value = true
+  } catch (error: any) {
+    if (isStepUpCancelled(error)) return
+    if (isStepUpBlocked(error)) {
+      appStore.showError(
+        stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN'
+          ? t('stepUp.adminApiKeyForbidden')
+          : t('stepUp.notEnabled')
+      )
+      return
+    }
+    appStore.showError(error?.message || 'Failed to reveal API Key')
+  } finally {
+    apiKeyLoading.value = false
+  }
+}
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -3975,6 +4034,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     selectedErrorCodes.value = []
   }
   editApiKey.value = ''
+  apiKeyVisible.value = false
 }
 
 async function loadTLSProfiles() {

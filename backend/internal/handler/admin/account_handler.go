@@ -775,6 +775,30 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+// GetAPIKey returns the stored API key for an account after admin step-up verification.
+// GET /api/v1/admin/accounts/:id/api-key
+func (h *AccountHandler) GetAPIKey(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	apiKey := account.GetCredential("api_key")
+	if apiKey == "" {
+		response.NotFound(c, "API key not found for this account")
+		return
+	}
+
+	response.Success(c, gin.H{"api_key": apiKey})
+}
+
 // CheckMixedChannel handles checking mixed channel risk for account-group binding.
 // POST /api/v1/admin/accounts/check-mixed-channel
 func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {
