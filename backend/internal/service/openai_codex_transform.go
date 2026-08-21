@@ -329,7 +329,7 @@ func ensureCodexToolDescriptions(reqBody map[string]any) bool {
 		return false
 	}
 
-	modified := ensureCodexToolDescriptionsInList(reqBody["tools"])
+	modified := false
 	input, ok := reqBody["input"].([]any)
 	if !ok {
 		return modified

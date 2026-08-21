@@ -644,6 +644,9 @@ func TestApplyCodexOAuthTransform_EnsuresToolDescriptions(t *testing.T) {
 		},
 		"tools": []any{
 			map[string]any{"type": "function", "name": "keep", "description": "Keeps its description"},
+			map[string]any{"type": "function", "name": "leave_unchanged"},
+			map[string]any{"type": "tool_search"},
+			map[string]any{"type": "web_search"},
 		},
 	}
 
@@ -656,7 +659,13 @@ func TestApplyCodexOAuthTransform_EnsuresToolDescriptions(t *testing.T) {
 	require.Equal(t, "Executes the exec tool.", tools[0].(map[string]any)["description"])
 	nested := tools[1].(map[string]any)["tools"].([]any)[0].(map[string]any)
 	require.Equal(t, "Executes the send tool.", nested["description"])
-	require.Equal(t, "Keeps its description", reqBody["tools"].([]any)[0].(map[string]any)["description"])
+	rootTools := reqBody["tools"].([]any)
+	require.Equal(t, "Keeps its description", rootTools[0].(map[string]any)["description"])
+	for _, rawTool := range rootTools[1:] {
+		_, hasDescription := rawTool.(map[string]any)["description"]
+		require.False(t, hasDescription)
+	}
+
 }
 
 func TestEnsureCodexToolDescriptionsFromRawPayload(t *testing.T) {
@@ -666,6 +675,15 @@ func TestEnsureCodexToolDescriptionsFromRawPayload(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.JSONEq(t, `{"model":"gpt-5.6-terra","input":[{"type":"additional_tools","tools":[{"type":"function","name":"exec","description":"Executes the exec tool."}]}]}`, string(updated))
+}
+
+func TestEnsureCodexToolDescriptionsFromRawPayload_LeavesRootToolsUnchanged(t *testing.T) {
+	payload := []byte(`{"model":"gpt-5.6-terra","tools":[{"type":"tool_search"},{"type":"web_search"}]}`)
+
+	updated, changed, err := ensureCodexToolDescriptionsFromRawPayload(payload)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, payload, updated)
 }
 
 func TestApplyCodexOAuthTransform_StripsReservedNamespaceTools(t *testing.T) {
