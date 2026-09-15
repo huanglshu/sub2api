@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,6 +59,43 @@ func TestFetchOpenAIAccountModelsAPIKeyPopulatesPickerFields(t *testing.T) {
 	require.Equal(t, "provider", models[0].OwnedBy)
 	require.EqualValues(t, 123, models[0].Created)
 	require.Equal(t, "named-model", models[2].ID)
+}
+
+func TestFetchOpenAIAccountModelsAPIKeyIncludesExplicitMappings(t *testing.T) {
+	gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+		return ordinaryModelsUpstreamResponse(`{"data":[{"id":"upstream-listed"},{"id":"excluded-upstream-model"}]}`), nil
+	}})
+	svc := &AccountTestService{openaiGatewayService: gateway}
+	account := newCodexModelsAPIKeyTestAccount("https://models.example/v1")
+	account.Credentials["model_mapping"] = map[string]any{
+		"glm-5.3-flash": "glm-5.3-flash",
+		"custom-alias":  "upstream-custom",
+	}
+
+	models, err := svc.FetchOpenAIAccountModels(context.Background(), account)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	require.NotContains(t, ids, "upstream-listed")
+	require.Contains(t, ids, "glm-5.3-flash")
+	require.Contains(t, ids, "custom-alias")
+	require.NotContains(t, ids, "excluded-upstream-model")
+}
+
+func TestFilterOpenAIAccountTestModelsExpandsWildcardMappings(t *testing.T) {
+	models := filterOpenAIAccountTestModels([]openai.Model{
+		{ID: "glm-5.3"},
+		{ID: "glm-5.3-flash"},
+		{ID: "deepseek-v4-flash"},
+	}, map[string]string{"glm-5.3*": "glm-5.3*"})
+
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	require.ElementsMatch(t, []string{"glm-5.3", "glm-5.3-flash"}, ids)
 }
 
 func TestFetchOpenAIAccountModelsPreservesEmptyCatalog(t *testing.T) {

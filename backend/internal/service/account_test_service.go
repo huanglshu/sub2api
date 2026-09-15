@@ -223,7 +223,43 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 			}
 		}
 	}
+	if account != nil {
+		payload.Data = filterOpenAIAccountTestModels(payload.Data, account.GetModelMapping())
+	}
 	return payload.Data, nil
+}
+
+// filterOpenAIAccountTestModels applies the same model_mapping allowlist used
+// by account scheduling to the test picker. An empty mapping means no limit.
+func filterOpenAIAccountTestModels(models []openai.Model, mapping map[string]string) []openai.Model {
+	if len(mapping) == 0 {
+		return models
+	}
+
+	filtered := make([]openai.Model, 0, len(models)+len(mapping))
+	seen := make(map[string]bool, len(models)+len(mapping))
+	for _, model := range models {
+		if !mappingSupportsRequestedModel(mapping, model.ID) || seen[model.ID] {
+			continue
+		}
+		filtered = append(filtered, model)
+		seen[model.ID] = true
+	}
+	for model := range mapping {
+		model = strings.TrimSpace(model)
+		if model == "" || strings.Contains(model, "*") || seen[model] {
+			continue
+		}
+		filtered = append(filtered, openai.Model{
+			ID:          model,
+			Object:      "model",
+			Type:        "model",
+			OwnedBy:     "openai",
+			DisplayName: model,
+		})
+		seen[model] = true
+	}
+	return filtered
 }
 
 // NewAccountTestService creates a new AccountTestService
