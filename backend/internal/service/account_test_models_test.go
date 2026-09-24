@@ -242,7 +242,9 @@ func TestFetchOpenAIAccountModelsOAuthImageNamesMappedToText(t *testing.T) {
 				models, err := svc.FetchOpenAIAccountModels(context.Background(), account)
 				require.NoError(t, err)
 				if target == "text-target-missing" {
-					require.Empty(t, models, "a missing text target must not be synthesized as an image choice")
+					// 测试选择器以编辑框白名单为准：即使上游目标缺失，
+					// 白名单键仍以普通条目形式呈现，保证编辑框选中的模型可测试。
+					require.Equal(t, []string{publicID}, pickerModelIDs(models))
 					return
 				}
 				require.Equal(t, []string{publicID}, pickerModelIDs(models))

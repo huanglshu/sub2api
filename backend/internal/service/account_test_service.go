@@ -254,6 +254,32 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 			seen[publicID] = true
 		}
 	}
+	// 测试选择器以编辑框「模型白名单」(model_mapping 键)为准：上游 /models
+	// 目录里没有列出的白名单键也补进选择器，避免运营在编辑框勾选的模型
+	// 在测试弹窗中选不到。passthrough 账号忽略映射，与转发链路保持一致；
+	// 含 "*" 的通配符键不是具体模型，不进选择器。
+	if account != nil && !account.IsOpenAIPassthroughEnabled() {
+		if mapping := account.GetModelMapping(); len(mapping) > 0 {
+			seen := make(map[string]bool, len(payload.Data)+len(mapping))
+			for _, model := range payload.Data {
+				seen[model.ID] = true
+			}
+			for publicID := range mapping {
+				publicID = strings.TrimSpace(publicID)
+				if publicID == "" || strings.Contains(publicID, "*") || seen[publicID] {
+					continue
+				}
+				payload.Data = append(payload.Data, openai.Model{
+					ID:          publicID,
+					Object:      "model",
+					Type:        "model",
+					OwnedBy:     "openai",
+					DisplayName: openaiCodexDisplayName(publicID),
+				})
+				seen[publicID] = true
+			}
+		}
+	}
 	return payload.Data, nil
 }
 
