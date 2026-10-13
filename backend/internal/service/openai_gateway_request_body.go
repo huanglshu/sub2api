@@ -360,12 +360,20 @@ func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
 	case []any:
 		filtered := input[:0]
 		changed := false
+		droppedReasoning := false
 		for _, item := range input {
+			wasReasoning := false
+			if inputItem, ok := item.(map[string]any); ok {
+				wasReasoning = openAIInputItemIsReasoning(inputItem)
+			}
 			nextItem, itemChanged, keep := sanitizeEncryptedReasoningInputItem(item)
 			if itemChanged {
 				changed = true
 			}
 			if !keep {
+				if wasReasoning {
+					droppedReasoning = true
+				}
 				continue
 			}
 			filtered = append(filtered, nextItem)
@@ -378,16 +386,26 @@ func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
 			return true
 		}
 		reqBody["input"] = filtered
+		// Dropping a reasoning item breaks the reasoning pairing the upstream
+		// validates by id, so the paired output item id must go with it.
+		if droppedReasoning && stripOpenAIReasoningPairedIDs(reqBody) {
+			return true
+		}
 		return true
 	case []map[string]any:
 		filtered := input[:0]
 		changed := false
+		droppedReasoning := false
 		for _, item := range input {
+			wasReasoning := openAIInputItemIsReasoning(item)
 			nextItem, itemChanged, keep := sanitizeEncryptedReasoningInputItem(item)
 			if itemChanged {
 				changed = true
 			}
 			if !keep {
+				if wasReasoning {
+					droppedReasoning = true
+				}
 				continue
 			}
 			nextMap, ok := nextItem.(map[string]any)
@@ -405,6 +423,9 @@ func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
 			return true
 		}
 		reqBody["input"] = filtered
+		if droppedReasoning && stripOpenAIReasoningPairedIDs(reqBody) {
+			return true
+		}
 		return true
 	case map[string]any:
 		nextItem, changed, keep := sanitizeEncryptedReasoningInputItem(input)
@@ -490,7 +511,16 @@ func SanitizeOpenAICrossModeFailoverReasoning(body []byte) (sanitized []byte, ch
 	if err := decodeOpenAIJSONUseNumber(body, &decoded); err != nil {
 		return body, false, fmt.Errorf("decode cross-mode failover body: %w", err)
 	}
-	if !dropOpenAIEncryptedReasoningInputItems(decoded) {
+	droppedReasoning := dropOpenAIEncryptedReasoningInputItems(decoded)
+	// Dropping the whole reasoning item also breaks the assistant message /
+	// reasoning pair the upstream validates by id. Keep the two in sync so the
+	// request does not fail with "was provided without its required 'reasoning'
+	// item" after a passthrough -> non-passthrough failover.
+	strippedPairedIDs := false
+	if droppedReasoning {
+		strippedPairedIDs = stripOpenAIReasoningPairedIDs(decoded)
+	}
+	if !droppedReasoning && !strippedPairedIDs {
 		return body, false, nil
 	}
 	out, marshalErr := marshalOpenAIUpstreamJSON(decoded)
@@ -748,6 +778,11 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 	changed := false
 	fallback := false
 	var itemErr error
+	// A reasoning id replayed under store=false is always stripped below, which
+	// leaves any paired output item id (assistant message or tool call)
+	// dangling; drop those ids too so the upstream does not reject the request
+	// with "was provided without its required 'reasoning' item".
+	stripPairedIDs := openAIRawInputStoreFalseStripsReasoning(input)
 	input.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
 			items = append(items, item.Raw)
@@ -768,7 +803,8 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 		stripID := typ == "reasoning" && strings.HasPrefix(id, "rs_")
 		addSummary := typ == "reasoning" && item.Get("summary").Type == gjson.Null
 		stripCallID := shouldStripOpenAIResponsesNonPairCallID(typ) && item.Get("call_id").Exists()
-		if !stripID && !addSummary && !stripCallID {
+		stripPairedID := stripPairedIDs && openAIReasoningPairedItemRaw(item)
+		if !stripID && !addSummary && !stripCallID && !stripPairedID {
 			items = append(items, item.Raw)
 			return true
 		}
@@ -778,6 +814,9 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 			return false
 		}
 		if stripID {
+			delete(decoded, "id")
+		}
+		if stripPairedID {
 			delete(decoded, "id")
 		}
 		if addSummary {
@@ -825,6 +864,10 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body []byte, knownSto
 	if !ok {
 		return body, false, nil
 	}
+	// See normalizeOpenAIAPIKeyStoreFalseReasoningReplay: reasoning ids are
+	// stripped or the items are dropped entirely, so paired assistant message
+	// ids must go with them.
+	stripPairedIDs := openAIInputStoreFalseStripsReasoning(items)
 	filtered := make([]any, 0, len(items))
 	changed := false
 	for _, rawItem := range items {
@@ -861,6 +904,10 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body []byte, knownSto
 				delete(item, "call_id")
 				changed = true
 			}
+		}
+		if stripPairedIDs && openAIReasoningPairedItem(item) {
+			delete(item, "id")
+			changed = true
 		}
 		filtered = append(filtered, item)
 	}

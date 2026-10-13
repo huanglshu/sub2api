@@ -75,6 +75,11 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 	}
 
 	items := make([]inputItem, 0)
+	// Reasoning ids and their paired output item ids move together; if any
+	// reasoning id is dropped here the paired id would dangle. Only reason when
+	// a reasoning id actually loses its id under the prefix/length rules below,
+	// so a request whose reasoning items keep their valid rs_* ids is untouched.
+	stripsReasoningID := openAIRawInputStripsAnyReasoningID(input)
 	input.ForEach(func(_, item gjson.Result) bool {
 		parsed := inputItem{raw: item.Raw}
 		if item.IsObject() {
@@ -84,6 +89,10 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 			parsed.stripCallID = item.Get("call_id").Exists() && shouldStripOpenAIResponsesNonPairCallID(trimmedItemType)
 			if id.Type == gjson.String {
 				parsed.stripID = shouldStripOpenAIResponsesInputItemID(trimmedItemType, id.String())
+			}
+			stripPaired := stripsReasoningID && openAIReasoningPairedItemRaw(item)
+			if stripPaired {
+				parsed.stripID = true
 			}
 		}
 		items = append(items, parsed)

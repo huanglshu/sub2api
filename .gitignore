@@ -160,6 +160,9 @@ issues/
 # Vitest / Vite cache at repo root
 .vite/
 
+# Local Go build cache / temp dir used when GOPATH is not writable
+.gotmp/
+
 !docs/LOCAL_DEVELOPMENT_CN.md
 !frontend/.env.local
 !backend/config.yaml

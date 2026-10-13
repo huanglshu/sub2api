@@ -104,12 +104,20 @@ func stripOpenAIInvalidEncryptedContentItems(reqBody map[string]any, invalid map
 	switch input := inputValue.(type) {
 	case []any:
 		filtered := input[:0]
+		droppedReasoning := false
 		for _, item := range input {
+			wasReasoning := false
+			if inputItem, ok := item.(map[string]any); ok {
+				wasReasoning = openAIInputItemIsReasoning(inputItem)
+			}
 			nextItem, changed, keep := stripItem(item)
 			if changed {
 				stripped++
 			}
 			if !keep {
+				if wasReasoning {
+					droppedReasoning = true
+				}
 				continue
 			}
 			filtered = append(filtered, nextItem)
@@ -122,6 +130,11 @@ func stripOpenAIInvalidEncryptedContentItems(reqBody map[string]any, invalid map
 			return stripped
 		}
 		reqBody["input"] = filtered
+		// A stripped reasoning item breaks the reasoning pairing the upstream
+		// validates by id, so the paired output item id must be dropped too.
+		if droppedReasoning {
+			stripOpenAIReasoningPairedIDs(reqBody)
+		}
 		return stripped
 	case map[string]any:
 		nextItem, changed, keep := stripItem(input)
@@ -201,6 +214,7 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 		return items, 0
 	}
 	stripped := 0
+	droppedReasoning := false
 	next := make([]json.RawMessage, 0, len(items))
 	for _, item := range items {
 		var decoded map[string]any
@@ -217,6 +231,7 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 			next = append(next, item)
 			continue
 		}
+		wasReasoning := openAIInputItemIsReasoning(decoded)
 		nextItem, changed, keep := sanitizeEncryptedReasoningInputItem(decoded)
 		if !changed {
 			next = append(next, item)
@@ -224,6 +239,9 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 		}
 		stripped++
 		if !keep {
+			if wasReasoning {
+				droppedReasoning = true
+			}
 			continue
 		}
 		rebuilt, err := marshalOpenAIUpstreamJSON(nextItem)
@@ -236,6 +254,15 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 	}
 	if stripped == 0 {
 		return items, 0
+	}
+	// A dropped reasoning item orphans the paired output item id; drop it too so
+	// the replayed history is internally consistent.
+	if droppedReasoning {
+		for i, item := range next {
+			if rebuilt, changed := dropOpenAIReasoningPairedItemIDRaw(item); changed {
+				next[i] = rebuilt
+			}
+		}
 	}
 	return next, stripped
 }

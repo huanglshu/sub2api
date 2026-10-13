@@ -1813,6 +1813,13 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 	referenceIDMappings := codexItemReferenceIDMappings(input, opts.PreserveCallIDs)
 	inputItemIDs := codexInputItemIDs(input)
 	inputCallIDs := codexInputCallIDs(input)
+	// Replaying a reasoning item and its paired assistant message with the
+	// upstream ids is validated as a pair; the reasoning id is always stripped
+	// below, so the message id must go with it or the request is rejected with
+	// "was provided without its required 'reasoning' item". The same applies to
+	// model-generated tool calls. Only remove those ids when the input actually
+	// carries reasoning items, so plain continuation references keep their ids.
+	stripReasoningPairedIDs := openAIInputHasReasoningItem(input)
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -1947,7 +1954,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
+		} else if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" &&
+			((stripReasoningPairedIDs && openAIReasoningPairedItem(m)) ||
+				shouldStripOpenAIResponsesInputItemID(typ, id)) {
 			ensureCopy()
 			delete(newItem, "id")
 		}
