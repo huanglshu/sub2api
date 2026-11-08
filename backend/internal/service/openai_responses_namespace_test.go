@@ -101,6 +101,7 @@ func TestShouldKeepOpenAIResponsesToolCallNamespaces(t *testing.T) {
 		{name: "apikey_with_mixed_case_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"tools":[{"type":" Namespace ","name":"mcp__codex_app","tools":[]}]}`), want: true},
 		{name: "apikey_with_lite_additional_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__cua_repl","tools":[{"type":"function","name":"js"}]}]}]}`), want: true},
 		{name: "apikey_with_mixed_case_lite_carrier_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":" Additional_Tools ","tools":[{"type":" Namespace ","name":"mcp__cua_repl","tools":[]}]}]}`), want: true},
+		{name: "apikey_with_tool_search_output_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":"tool_search_output","status":"completed","call_id":"search_1","tools":[{"type":"namespace","name":"mcp__notion","tools":[{"type":"function","name":"get_page"}]}]}]}`), want: true},
 		{name: "apikey_with_lite_function_only_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"function","name":"js","namespace":"mcp__cua_repl"}]}]}`), want: false},
 		{name: "apikey_function_tool_with_namespace_field_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"tools":[{"type":"function","name":"automation_update","namespace":"mcp__codex_app"}]}`), want: false},
 		{name: "apikey_compact_with_namespace_tool_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, compactPath: true, body: []byte(`{"tools":[{"type":"namespace","name":"mcp__codex_app","tools":[]}]}`), want: false},
@@ -280,4 +281,31 @@ func TestStripOpenAIResponsesInputNamespacesKeepsToolCallNamespaces(t *testing.T
 	for index := 0; index < 8; index++ {
 		require.False(t, gjson.GetBytes(strippedAll, "input."+strconv.Itoa(index)+".namespace").Exists())
 	}
+}
+
+func TestStripOpenAIResponsesInputNamespacesBackfillsMissingFunctionCallNamespace(t *testing.T) {
+	body := []byte(`{
+		"tools":[
+			{"type":"tool_search"},
+			{"type":"function","name":"exec_command"}
+		],
+		"input":[
+			{"type":"tool_search_output","status":"completed","call_id":"search_1","tools":[
+				{"type":"namespace","name":"mcp__notion","tools":[
+					{"type":"function","name":"get_page"}
+				]}
+			]},
+			{"type":"function_call","call_id":"call_363","name":"get_page","arguments":"{\"id\":\"p1\"}"},
+			{"type":"function_call","call_id":"call_flat","name":"mcp__notion__get_page","arguments":"{\"id\":\"p2\"}"},
+			{"type":"function_call","call_id":"call_top","name":"exec_command","arguments":"{}"}
+		]
+	}`)
+
+	out, err := stripOpenAIResponsesInputNamespaces(body, true)
+	require.NoError(t, err)
+	require.Equal(t, "mcp__notion", gjson.GetBytes(out, "input.1.namespace").String())
+	require.Equal(t, "get_page", gjson.GetBytes(out, "input.1.name").String())
+	require.Equal(t, "mcp__notion", gjson.GetBytes(out, "input.2.namespace").String())
+	require.Equal(t, "get_page", gjson.GetBytes(out, "input.2.name").String())
+	require.False(t, gjson.GetBytes(out, "input.3.namespace").Exists())
 }

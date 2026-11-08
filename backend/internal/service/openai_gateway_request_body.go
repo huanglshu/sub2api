@@ -1729,6 +1729,14 @@ func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *
 			}
 			normalized = webSearchBody
 			changed = changed || webSearchChanged
+			if !account.IsOpenAIResponsesFlattenNamespacesEnabled() {
+				nsBody, nsChanged, nsErr := ensureOpenAIResponsesToolCallNamespacesBody(normalized)
+				if nsErr != nil {
+					return body, false, fmt.Errorf("normalize websocket body namespaces: %w", nsErr)
+				}
+				normalized = nsBody
+				changed = changed || nsChanged
+			}
 		}
 	}
 	needsOrphanCleanup := account != nil && account.IsOpenAIOAuthLike() &&

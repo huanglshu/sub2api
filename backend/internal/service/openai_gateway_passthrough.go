@@ -229,17 +229,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 	}
 
-	if bytes.Contains(body, []byte(`"collaboration"`)) && bytes.Contains(body, []byte(`"namespace"`)) {
-		strippedBody, changed, stripErr := stripReservedOpenAINamespaceToolsFromRawPayload(body)
-		if stripErr != nil {
-			return nil, fmt.Errorf("strip reserved namespace tools: %w", stripErr)
-		}
-		if changed {
-			body = strippedBody
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped reserved namespace tools from passthrough /responses request model=%s account=%s", reqModel, account.Name)
-		}
-	}
-
 	if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
 		!isOpenAIResponsesCompactPath(c) && needsOpenAIResponsesClientToolAdaptation(body) {
 		adaptedBody, mapping, adaptErr := adaptOpenAIResponsesClientTools(body)

@@ -250,7 +250,6 @@ func prepareOpenAIWSHTTPBridgeBody(account *Account, payload []byte) ([]byte, er
 	if body == nil {
 		return nil, errors.New("response.create payload must be a JSON object")
 	}
-	stripReservedOpenAINamespaceTools(body)
 	delete(body, "type")
 	delete(body, "generate")
 	delete(body, "previous_response_id")

@@ -134,7 +134,7 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 	}
 	found := false
 	input.ForEach(func(_, item gjson.Result) bool {
-		if !strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "additional_tools") {
+		if !isOpenAIResponsesToolCarrierInputItem(item) {
 			return true
 		}
 		if hasNamespaceTool(item.Get("tools")) {
@@ -144,6 +144,119 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 		return true
 	})
 	return found
+}
+
+func isOpenAIResponsesToolCarrierInputItem(item gjson.Result) bool {
+	if !item.IsObject() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Get("type").String())) {
+	case "additional_tools":
+		return true
+	case "tool_search_output":
+		status := item.Get("status")
+		return !status.Exists() || strings.EqualFold(strings.TrimSpace(status.String()), "completed")
+	default:
+		return false
+	}
+}
+
+type openAIResponsesNamespaceToolResolver struct {
+	topLevelTools        map[string]bool
+	uniqueChildNamespace map[string]string
+	ambiguousChild       map[string]bool
+	flatNames            map[string]apicompat.ResponsesNamespaceName
+}
+
+func newOpenAIResponsesNamespaceToolResolver(body []byte) *openAIResponsesNamespaceToolResolver {
+	r := &openAIResponsesNamespaceToolResolver{
+		topLevelTools:        make(map[string]bool),
+		uniqueChildNamespace: make(map[string]string),
+		ambiguousChild:       make(map[string]bool),
+		flatNames:            make(map[string]apicompat.ResponsesNamespaceName),
+	}
+	collectTools := func(tools gjson.Result) {
+		if !tools.IsArray() {
+			return
+		}
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			if !tool.IsObject() {
+				return true
+			}
+			typ := strings.ToLower(strings.TrimSpace(tool.Get("type").String()))
+			name := strings.TrimSpace(tool.Get("name").String())
+			switch typ {
+			case "function", "custom":
+				if name != "" {
+					r.topLevelTools[name] = true
+				}
+			case "namespace":
+				if name == "" {
+					return true
+				}
+				children := tool.Get("tools")
+				if !children.IsArray() || len(children.Array()) == 0 {
+					children = tool.Get("children")
+				}
+				if !children.IsArray() {
+					return true
+				}
+				children.ForEach(func(_, child gjson.Result) bool {
+					if !child.IsObject() {
+						return true
+					}
+					childType := strings.ToLower(strings.TrimSpace(child.Get("type").String()))
+					if childType != "" && childType != "function" {
+						return true
+					}
+					childName := strings.TrimSpace(child.Get("name").String())
+					if childName == "" {
+						return true
+					}
+					if prev, exists := r.uniqueChildNamespace[childName]; exists && prev != name {
+						r.ambiguousChild[childName] = true
+						delete(r.uniqueChildNamespace, childName)
+					} else if !r.ambiguousChild[childName] {
+						r.uniqueChildNamespace[childName] = name
+					}
+					flat := name + "__" + childName
+					r.flatNames[flat] = apicompat.ResponsesNamespaceName{
+						Namespace: name,
+						Name:      childName,
+					}
+					return true
+				})
+			}
+			return true
+		})
+	}
+
+	collectTools(gjson.GetBytes(body, "tools"))
+	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			if isOpenAIResponsesToolCarrierInputItem(item) {
+				collectTools(item.Get("tools"))
+			}
+			return true
+		})
+	}
+	return r
+}
+
+func (r *openAIResponsesNamespaceToolResolver) resolveMissingFunctionCallNamespace(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	if r == nil || name == "" || r.topLevelTools[name] {
+		return "", "", false
+	}
+	if !r.ambiguousChild[name] {
+		if ns := r.uniqueChildNamespace[name]; ns != "" {
+			return name, ns, true
+		}
+	}
+	if entry, ok := r.flatNames[name]; ok {
+		return entry.Name, entry.Namespace, true
+	}
+	return "", "", false
 }
 
 // openAIResponsesToolCallItemTypes 是携带 namespace 的调用项类型集合。与
@@ -206,9 +319,50 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 	// Offsets below are relative to input.Raw, not the full request body.
 	copyFrom := 0
 	var stripErr error
+	var resolver *openAIResponsesNamespaceToolResolver
 	input.ForEach(func(_, item gjson.Result) bool {
-		if !item.IsObject() || !item.Get("namespace").Exists() ||
-			(keepToolCallNamespaces && isOpenAIResponsesToolCallItemType(item.Get("type").String())) {
+		if !item.IsObject() {
+			return true
+		}
+		itemType := item.Get("type").String()
+		hasNamespace := item.Get("namespace").Exists()
+		if keepToolCallNamespaces && isOpenAIResponsesToolCallItemType(itemType) {
+			if hasNamespace && strings.TrimSpace(item.Get("namespace").String()) != "" {
+				return true
+			}
+			if !strings.EqualFold(strings.TrimSpace(itemType), "function_call") {
+				return true
+			}
+			if resolver == nil {
+				resolver = newOpenAIResponsesNamespaceToolResolver(body)
+			}
+			resolvedName, resolvedNamespace, ok := resolver.resolveMissingFunctionCallNamespace(item.Get("name").String())
+			if !ok {
+				return true
+			}
+			itemBody, err := sjson.SetBytes([]byte(item.Raw), "namespace", resolvedNamespace)
+			if err != nil {
+				stripErr = err
+				return false
+			}
+			if resolvedName != strings.TrimSpace(item.Get("name").String()) {
+				itemBody, err = sjson.SetBytes(itemBody, "name", resolvedName)
+				if err != nil {
+					stripErr = err
+					return false
+				}
+			}
+			if !changed {
+				rebuilt.Grow(len(input.Raw) + 64)
+				changed = true
+			}
+			itemStart := item.Index - input.Index
+			_, _ = rebuilt.WriteString(input.Raw[copyFrom:itemStart])
+			_, _ = rebuilt.Write(itemBody)
+			copyFrom = itemStart + len(item.Raw)
+			return true
+		}
+		if !hasNamespace {
 			return true
 		}
 		itemBody, err := sjson.DeleteBytes([]byte(item.Raw), "namespace")
@@ -240,6 +394,72 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 		return body, fmt.Errorf("replace OpenAI input after namespace deletion: %w", err)
 	}
 	return stripped, nil
+}
+
+// ensureOpenAIResponsesToolCallNamespacesBody backfills missing namespace fields
+// on historical function_call items when the target tool only exists under a
+// single declared or tool_search-discovered namespace.
+func ensureOpenAIResponsesToolCallNamespacesBody(body []byte) ([]byte, bool, error) {
+	if len(body) == 0 || !bytes.Contains(body, []byte(`"namespace"`)) || !bytes.Contains(body, []byte(`"function_call"`)) {
+		return body, false, nil
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+	var rebuilt bytes.Buffer
+	changed := false
+	copyFrom := 0
+	var backfillErr error
+	var resolver *openAIResponsesNamespaceToolResolver
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() || !strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "function_call") {
+			return true
+		}
+		if strings.TrimSpace(item.Get("namespace").String()) != "" {
+			return true
+		}
+		if resolver == nil {
+			resolver = newOpenAIResponsesNamespaceToolResolver(body)
+		}
+		resolvedName, resolvedNamespace, ok := resolver.resolveMissingFunctionCallNamespace(item.Get("name").String())
+		if !ok {
+			return true
+		}
+		itemBody, err := sjson.SetBytes([]byte(item.Raw), "namespace", resolvedNamespace)
+		if err != nil {
+			backfillErr = err
+			return false
+		}
+		if resolvedName != strings.TrimSpace(item.Get("name").String()) {
+			itemBody, err = sjson.SetBytes(itemBody, "name", resolvedName)
+			if err != nil {
+				backfillErr = err
+				return false
+			}
+		}
+		if !changed {
+			rebuilt.Grow(len(input.Raw) + 64)
+			changed = true
+		}
+		itemStart := item.Index - input.Index
+		_, _ = rebuilt.WriteString(input.Raw[copyFrom:itemStart])
+		_, _ = rebuilt.Write(itemBody)
+		copyFrom = itemStart + len(item.Raw)
+		return true
+	})
+	if backfillErr != nil {
+		return body, false, fmt.Errorf("backfill OpenAI input function_call namespace: %w", backfillErr)
+	}
+	if !changed {
+		return body, false, nil
+	}
+	_, _ = rebuilt.WriteString(input.Raw[copyFrom:])
+	updated, err := sjson.SetRawBytes(body, "input", rebuilt.Bytes())
+	if err != nil {
+		return body, false, fmt.Errorf("replace OpenAI input after namespace backfill: %w", err)
+	}
+	return updated, true, nil
 }
 
 func setOpenAIResponsesNamespaceNames(c *gin.Context, names map[string]apicompat.ResponsesNamespaceName) {
