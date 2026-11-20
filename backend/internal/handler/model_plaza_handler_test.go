@@ -3,11 +3,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -25,7 +28,7 @@ func plazaGroups() []service.PlazaGroup {
 
 func TestFilterPlazaVisibleGroups_AnonymousSeesOnlyNonExclusive(t *testing.T) {
 	// 匿名(allowedExclusive == nil):仅非专属分组;订阅型公开分组照常可见(橱窗语义)。
-	visible := filterPlazaVisibleGroups(plazaGroups(), nil)
+	visible := filterPlazaVisibleGroups(plazaGroups(), nil, false)
 	require.Len(t, visible, 2)
 	ids := []int64{visible[0].ID, visible[1].ID}
 	require.ElementsMatch(t, []int64{1, 3}, ids)
@@ -34,7 +37,7 @@ func TestFilterPlazaVisibleGroups_AnonymousSeesOnlyNonExclusive(t *testing.T) {
 func TestFilterPlazaVisibleGroups_AuthedSeesGrantedExclusive(t *testing.T) {
 	// 登录:非专属 + 授权的专属;未授权的专属仍不可见。
 	allowed := map[int64]struct{}{2: {}}
-	visible := filterPlazaVisibleGroups(plazaGroups(), allowed)
+	visible := filterPlazaVisibleGroups(plazaGroups(), allowed, false)
 	require.Len(t, visible, 3)
 	ids := make([]int64, 0, len(visible))
 	for _, g := range visible {
@@ -46,8 +49,31 @@ func TestFilterPlazaVisibleGroups_AuthedSeesGrantedExclusive(t *testing.T) {
 func TestFilterPlazaVisibleGroups_AuthedEmptySetSeesNoExclusive(t *testing.T) {
 	// 登录但无任何专属授权(空集合,非 nil):与匿名同样只见非专属,
 	// 但语义区分要保持——空集合不能被当作 nil 匿名分支。
-	visible := filterPlazaVisibleGroups(plazaGroups(), map[int64]struct{}{})
+	visible := filterPlazaVisibleGroups(plazaGroups(), map[int64]struct{}{}, false)
 	require.Len(t, visible, 2)
+}
+
+func TestFilterPlazaVisibleGroups_RestrictedUserSeesOnlyGrantedPublic(t *testing.T) {
+	// 开启公开分组限制后，公开分组也必须落在授权集合内，否则用户会在广场
+	// 看到自己实际绑定不了的分组。
+	allowed := map[int64]struct{}{1: {}, 2: {}}
+	visible := filterPlazaVisibleGroups(plazaGroups(), allowed, true)
+	ids := make([]int64, 0, len(visible))
+	for _, g := range visible {
+		ids = append(ids, g.ID)
+	}
+	// 3 是未授权的公开分组，受限后不可见；4 是未授权的专属分组，一贯不可见。
+	require.ElementsMatch(t, []int64{1, 2}, ids)
+}
+
+func TestFilterPlazaVisibleGroups_RestrictionDoesNotAffectAnonymous(t *testing.T) {
+	// 匿名没有用户记录，限制标志无从谈起，可见性必须与未受限时一致。
+	visible := filterPlazaVisibleGroups(plazaGroups(), nil, true)
+	ids := make([]int64, 0, len(visible))
+	for _, g := range visible {
+		ids = append(ids, g.ID)
+	}
+	require.ElementsMatch(t, []int64{1, 3}, ids)
 }
 
 func TestModelPlazaHandler_NilSettingServiceFailsClosed404(t *testing.T) {
@@ -66,6 +92,7 @@ func TestToModelPlazaGroupDTO_UserRateAndFieldWhitelist(t *testing.T) {
 	g := service.PlazaGroup{
 		ID: 2, Name: "vip", Description: "d", Platform: "anthropic",
 		SubscriptionType: "standard", RateMultiplier: 1, IsExclusive: true,
+		VideoRateIndependent: true, VideoRateMultiplier: 0.7,
 		Models: []service.PlazaModel{{
 			Name:     "claude-sonnet",
 			Platform: "anthropic",
@@ -92,11 +119,14 @@ func TestToModelPlazaGroupDTO_UserRateAndFieldWhitelist(t *testing.T) {
 		"rate_multiplier", "user_rate_multiplier", "is_exclusive", "models",
 		"peak_rate_enabled", "peak_start", "peak_end", "peak_rate_multiplier",
 		"image_rate_independent", "image_rate_multiplier", "long_context_pricing_enabled",
+		"video_rate_independent", "video_rate_multiplier",
 	} {
 		_, exists := decoded[key]
 		require.Truef(t, exists, "plaza group DTO must expose %q", key)
 	}
 	require.InDelta(t, 0.5, decoded["user_rate_multiplier"].(float64), 1e-9)
+	require.Equal(t, true, decoded["video_rate_independent"])
+	require.Equal(t, 0.7, decoded["video_rate_multiplier"])
 
 	// 模型条目:pricing + official_pricing 并存;official 缺失字段输出 null 而非省略
 	models := decoded["models"].([]any)
@@ -220,4 +250,58 @@ func TestToModelPlazaGroupDTO_TimePricing(t *testing.T) {
 	weekdaysModel := decoded["models"].([]any)[1].(map[string]any)
 	weekdaysTP := weekdaysModel["time_pricing"].(map[string]any)
 	require.Equal(t, true, weekdaysTP["weekdays_only"])
+}
+
+func TestFilterPlazaVisibleGroups_SubscribedExclusiveGroup(t *testing.T) {
+	groups := []service.PlazaGroup{
+		{ID: 42, IsExclusive: true, SubscriptionType: "subscription"},
+		{ID: 43, IsExclusive: true, SubscriptionType: "subscription"},
+		{ID: 44, IsExclusive: true, SubscriptionType: "standard"},
+	}
+	require.Empty(t, filterPlazaVisibleGroups(groups, nil, false))
+	for _, restricted := range []bool{false, true} {
+		visible := filterPlazaVisibleGroups(groups, map[int64]struct{}{42: {}}, restricted)
+		require.Len(t, visible, 1)
+		require.Equal(t, int64(42), visible[0].ID)
+	}
+}
+
+type plazaVarySettingRepo struct{ service.SettingRepository }
+
+func (plazaVarySettingRepo) GetMultiple(context.Context, []string) (map[string]string, error) {
+	return map[string]string{service.SettingKeyModelPlazaEnabled: "true"}, nil
+}
+
+type plazaVaryChannelRepo struct{ service.ChannelRepository }
+
+func (plazaVaryChannelRepo) ListAll(context.Context) ([]service.Channel, error) { return nil, nil }
+
+type plazaVaryGroupRepo struct{ service.GroupRepository }
+
+func (plazaVaryGroupRepo) ListActive(context.Context) ([]service.Group, error) { return nil, nil }
+
+func TestModelPlazaHandler_VaryKeepsCORSOrigin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewModelPlazaHandler(
+		service.NewModelPlazaService(plazaVaryChannelRepo{}, plazaVaryGroupRepo{}, nil, nil, nil),
+		nil,
+		service.NewSettingService(plazaVarySettingRepo{}, &config.Config{}),
+	)
+	r := gin.New()
+	r.Use(middleware.CORS(config.CORSConfig{AllowedOrigins: []string{"https://a.example", "https://b.example"}}))
+	r.GET("/api/v1/model-plaza", h.Get)
+
+	for _, origin := range []string{"https://a.example", "https://b.example"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/model-plaza", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Accept-Language", "en")
+		w := httptest.NewRecorder()
+
+		r.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.Equal(t, origin, w.Header().Get("Access-Control-Allow-Origin"))
+		// 共享缓存需同时按来源与语言区分，否则 A 来源的响应可能被复用给 B。
+		require.Equal(t, []string{"Origin", "Accept-Language"}, w.Header().Values("Vary"))
+	}
 }

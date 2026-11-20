@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestAccountTestService_OpenAIImageOAuthHandlesOutputItemDoneFallback(t *testing.T) {
@@ -43,7 +45,7 @@ func TestAccountTestService_OpenAIImageOAuthHandlesOutputItemDoneFallback(t *tes
 		},
 	}
 
-	err := svc.testOpenAIImageOAuth(c, context.Background(), account, "gpt-image-2", "draw a cat")
+	err := svc.testOpenAIImageOAuth(c, context.Background(), account, "gpt-image-1", "draw a cat")
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
@@ -90,4 +92,129 @@ func TestAccountTestService_OpenAIImageAPIKeyUsesConfiguredV1BaseURL(t *testing.
 	require.Equal(t, "Bearer test-api-key", upstream.lastReq.Header.Get("Authorization"))
 	require.Contains(t, rec.Body.String(), "data:image/png;base64,aGVsbG8=")
 	require.Contains(t, rec.Body.String(), "\"success\":true")
+}
+
+func TestAccountTestService_OpenAIImageAPIKeyOmitsResponseFormatForEdgeCloud(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/1/test", nil)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aGVsbG8="}]}`)),
+		},
+	}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := &Account{
+		ID:       64,
+		Name:     "edgecloud-openai-apikey",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://aigateway.edgecloudapp.com/v1/account/gpt-image-2",
+		},
+	}
+
+	err := svc.testOpenAIImageAPIKey(c, context.Background(), account, "gpt-image-2", "draw a cat")
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "response_format").Exists())
+}
+
+func TestAccountTestService_OpenAIImageAPIKeyOmitsResponseFormatForAzure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/1/test", nil)
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aGVsbG8="}]}`)),
+		},
+	}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := &Account{
+		ID:       62,
+		Name:     "azure-openai-apikey",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://example.openai.azure.com/openai/v1",
+		},
+	}
+
+	err := svc.testOpenAIImageAPIKey(c, context.Background(), account, "gpt-image-2", "draw a cat")
+	require.NoError(t, err)
+	require.Equal(t, "https://example.openai.azure.com/openai/v1/images/generations", upstream.lastReq.URL.String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "response_format").Exists())
+}
+
+func TestAccountTestService_OpenAIImageOAuthSurfacesSSEError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/1/test", nil)
+	svc := &AccountTestService{httpUpstream: &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader("data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The selected image model is unavailable\"}}\n\n")),
+	}}}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "test"}}
+	// 该模型仍走 Codex /responses 图片工具；直调 Codex Images 的模型返回原生 JSON
+	// 错误帧，不走这里的 SSE 错误分支。
+	err := svc.testOpenAIImageOAuth(c, context.Background(), account, "gpt-image-1", "draw a cup")
+	require.ErrorContains(t, err, "The selected image model is unavailable")
+	require.NotContains(t, rec.Body.String(), "No images returned")
+}
+
+func TestAccountTestService_OpenAIImageAPIKeyOmitsUnsupportedResponseFormat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, model := range []string{
+		"gpt-image-1",
+		"gpt-image-1-mini",
+		"gpt-image-1.5",
+		"gpt-image-2",
+		"gpt-image-2-2026-04-21",
+		"gpt-image-2.5-flare",
+	} {
+		t.Run(model, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/1/test", nil)
+
+			upstream := &httpUpstreamRecorder{
+				resp: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aGVsbG8="}]}`)),
+				},
+			}
+			svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+			account := &Account{
+				ID: 54, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "test-api-key"},
+			}
+
+			err := svc.testOpenAIAccountConnection(c, account, model, "draw a cat", AccountTestModeDefault)
+
+			require.NoError(t, err)
+			require.NotNil(t, upstream.lastReq)
+			require.Equal(t, "https://api.openai.com/v1/images/generations", upstream.lastReq.URL.String())
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal(upstream.lastBody, &payload))
+			require.Equal(t, model, payload["model"])
+			require.Equal(t, "draw a cat", payload["prompt"])
+			require.Equal(t, float64(1), payload["n"])
+			// GPT Image models always return base64 images and reject this legacy parameter.
+			require.NotContains(t, payload, "response_format")
+			require.Contains(t, rec.Body.String(), "data:image/png;base64,aGVsbG8=")
+			require.Contains(t, rec.Body.String(), `"success":true`)
+		})
+	}
 }

@@ -11,6 +11,11 @@ import (
 )
 
 var codexModelMap = map[string]string{
+	"gpt-6.1-terra":        "gpt-6.1-terra",
+	"gpt-6.1-sol":          "gpt-6.1-sol",
+	"gpt-6-sol":            "gpt-6-sol",
+	"gpt-6-luna":           "gpt-6-luna",
+	"gpt-6-astra":          "gpt-6-astra",
 	"gpt-5.6-sol":          "gpt-5.6-sol",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
 	"gpt-5.6-luna":         "gpt-5.6-luna",
@@ -59,6 +64,10 @@ var codexVersionModelPrefixes = []struct {
 	prefix string
 	target string
 }{
+	{prefix: "gpt-6.1-terra", target: "gpt-6.1-terra"},
+	{prefix: "gpt-6.1-sol", target: "gpt-6.1-sol"},
+	{prefix: "gpt-6-sol", target: "gpt-6-sol"},
+	{prefix: "gpt-6-luna", target: "gpt-6-luna"},
 	{prefix: "gpt-5.6-sol", target: "gpt-5.6-sol"},
 	{prefix: "gpt-5.6-terra", target: "gpt-5.6-terra"},
 	{prefix: "gpt-5.6-luna", target: "gpt-5.6-luna"},
@@ -86,6 +95,8 @@ type codexOAuthTransformOptions struct {
 	SkipDefaultInstructions             bool
 	PreserveToolCallIDs                 bool
 	OmitPromotedSystemMessagesFromInput bool
+	// ResponsesLite selects where an injected hosted tool is declared.
+	ResponsesLite bool
 }
 
 const (
@@ -264,6 +275,12 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if normalizeCodexTools(reqBody) {
 		result.Modified = true
 	}
+	// Codex 0.147.0 can emit an empty description on runtime tools carried by
+	// input.additional_tools. This upstream requires every such tool to have a
+	// non-empty description, so normalize both absent and empty values.
+	if ensureCodexToolDescriptions(reqBody) {
+		result.Modified = true
+	}
 	// Collect aliases only after prompt/functions/function_call compatibility
 	// has produced the final Responses protocol nodes. Otherwise references
 	// introduced by those migrations can retain the reserved name.
@@ -344,7 +361,87 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		result.Modified = true
 	}
 
+	// Runs after input filtering so it sees the final replayed history. The
+	// compact endpoint has its own wire shape and is left untouched.
+	if !opts.IsCompact && ensureOpenAIOAuthWebSearchToolForHistory(reqBody, opts.ResponsesLite) {
+		result.Modified = true
+	}
+
 	return result
+}
+
+// ensureCodexToolDescriptions supplies a fallback only for missing or empty
+// tool descriptions. It deliberately leaves JSON-schema property descriptions
+// untouched because those describe tool arguments rather than the tool itself.
+func ensureCodexToolDescriptions(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+
+	modified := false
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return modified
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "additional_tools" {
+			continue
+		}
+		if ensureCodexToolDescriptionsInList(item["tools"]) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func ensureCodexToolDescriptionsInList(rawTools any) bool {
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		description, hasDescription := tool["description"].(string)
+		if !hasDescription || strings.TrimSpace(description) == "" {
+			tool["description"] = codexToolFallbackDescription(tool)
+			modified = true
+		}
+		if ensureCodexToolDescriptionsInList(tool["tools"]) {
+			modified = true
+		}
+		if ensureCodexToolDescriptionsInList(tool["children"]) {
+			modified = true
+		}
+	}
+	return modified
+}
+
+func codexToolFallbackDescription(tool map[string]any) string {
+	if name := strings.TrimSpace(firstNonEmptyString(tool["name"])); name != "" {
+		return "Executes the " + name + " tool."
+	}
+	return "Executes a Codex runtime tool."
+}
+
+func ensureCodexToolDescriptionsFromRawPayload(payload []byte) ([]byte, bool, error) {
+	requestBody := make(map[string]any)
+	if err := json.Unmarshal(payload, &requestBody); err != nil {
+		return payload, false, err
+	}
+	if !ensureCodexToolDescriptions(requestBody) {
+		return payload, false, nil
+	}
+	rebuilt, err := json.Marshal(requestBody)
+	if err != nil {
+		return payload, false, err
+	}
+	return rebuilt, true, nil
 }
 
 func normalizeCodexToolChoice(reqBody map[string]any) bool {
@@ -358,6 +455,12 @@ func normalizeCodexToolChoice(reqBody map[string]any) bool {
 	}
 	choiceType := strings.TrimSpace(firstNonEmptyString(choiceMap["type"]))
 	if choiceType == "" {
+		return false
+	}
+	if choiceType == "allowed_tools" {
+		// This is a selection policy, not a declared tool type. Preserve it for
+		// upstream validation (including references to input.additional_tools);
+		// falling back to auto would silently discard the caller's restriction.
 		return false
 	}
 	modified := false
@@ -1213,10 +1316,11 @@ func normalizeOpenAIResponsesImageOnlyModel(reqBody map[string]any) bool {
 		reqBody["tool_choice"] = map[string]any{"type": "image_generation"}
 		modified = true
 	}
-	if imageModel != openAIImagesResponsesMainModel {
+	mainModel := openAIImagesResponsesMainModelValue()
+	if imageModel != mainModel {
 		modified = true
 	}
-	reqBody["model"] = openAIImagesResponsesMainModel
+	reqBody["model"] = mainModel
 	return modified
 }
 
@@ -1224,7 +1328,15 @@ func normalizeOpenAIModelForUpstream(account *Account, model string) string {
 	if account == nil || account.UsesOpenAICodexProtocol() {
 		return normalizeCodexModel(model)
 	}
-	return strings.TrimSpace(model)
+	model = strings.TrimSpace(model)
+	if account.Platform == PlatformDeepseek {
+		// DeepSeek 走 OpenAI 兼容入口，不经 Anthropic 入站的 [1m] 后缀归一
+		// （parseGatewayRequestCurrentBody 仅处理 PlatformAnthropic 协议）。
+		// 官方 Claude Code 接入要求 ANTHROPIC_MODEL=deepseek-flash[1m] 写法，
+		// 出站前剥离泄漏的客户端上下文后缀，转发规范名给上游。
+		return normalizeClaudeCodeLongContextModel(model)
+	}
+	return model
 }
 
 func SupportsVerbosity(model string) bool {
@@ -1395,8 +1507,7 @@ func extractPromptLikeInstructionsFromInput(reqBody map[string]any) string {
 
 // defaultCodexSynthInstructions 返回合成路径在 instructions 为空时应填入的默认提示词。
 //
-// 按 model 选择真实 Codex CLI 的 base instructions（codex 系→GPT-5-Codex，
-// gpt-5.2→GPT-5.2，gpt-5.1/gpt-5→GPT-5.1），使合成请求在提示词层面贴近真实 Codex 行为；
+// 按 model 选择真实 Codex CLI 的 base instructions，使合成请求在提示词层面贴近真实 Codex 行为；
 // 若内嵌 prompt 意外为空，回退到最小占位符以保证字段非空。
 func defaultCodexSynthInstructions(model string) string {
 	if instructions := strings.TrimSpace(openai.CodexBaseInstructionsForModel(model)); instructions != "" {
@@ -1585,6 +1696,13 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 	referenceIDMappings := codexItemReferenceIDMappings(input, opts.PreserveCallIDs)
 	inputItemIDs := codexInputItemIDs(input)
 	inputCallIDs := codexInputCallIDs(input)
+	// Replaying a reasoning item and its paired assistant message with the
+	// upstream ids is validated as a pair; the reasoning id is always stripped
+	// below, so the message id must go with it or the request is rejected with
+	// "was provided without its required 'reasoning' item". The same applies to
+	// model-generated tool calls. Only remove those ids when the input actually
+	// carries reasoning items, so plain continuation references keep their ids.
+	stripReasoningPairedIDs := openAIInputHasReasoningItem(input)
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -1719,7 +1837,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
+		} else if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" &&
+			((stripReasoningPairedIDs && openAIReasoningPairedItem(m)) ||
+				shouldStripOpenAIResponsesInputItemID(typ, id)) {
 			ensureCopy()
 			delete(newItem, "id")
 		}

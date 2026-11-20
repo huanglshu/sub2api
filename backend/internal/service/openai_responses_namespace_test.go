@@ -2,6 +2,7 @@ package service
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,7 @@ func TestShouldKeepOpenAIResponsesToolCallNamespaces(t *testing.T) {
 		transport          OpenAIUpstreamTransport
 		passthroughEnabled bool
 		compactPath        bool
+		body               []byte
 		want               bool
 	}{
 		// 上游按 namespace 解析历史调用，缺字段会 400 "Missing namespace for function_call"。
@@ -92,15 +94,24 @@ func TestShouldKeepOpenAIResponsesToolCallNamespaces(t *testing.T) {
 		// WSv2 + compact 是唯一「不摊平但仍必须清理」的组合，钉住 compact 判定本身，
 		// 使其不会被误当成可由 shouldFlatten 推导出的冗余分支。
 		{name: "oauth_compact_wsv2_strips", account: oauth, transport: OpenAIUpstreamTransportResponsesWebsocketV2, compactPath: true, want: false},
-		// API Key 出口是标准 Responses API，不认识该字段。
-		{name: "apikey_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, want: false},
+		// API Key 默认按标准 Responses API 清理；请求显式声明 namespace 工具时，
+		// 自定义上游需要原样接收对应的历史调用。
+		{name: "apikey_without_namespace_tool_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, want: false},
+		{name: "apikey_with_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"tools":[{"type":"namespace","name":"mcp__codex_app","tools":[]}]}`), want: true},
+		{name: "apikey_with_mixed_case_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"tools":[{"type":" Namespace ","name":"mcp__codex_app","tools":[]}]}`), want: true},
+		{name: "apikey_with_lite_additional_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__cua_repl","tools":[{"type":"function","name":"js"}]}]}]}`), want: true},
+		{name: "apikey_with_mixed_case_lite_carrier_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":" Additional_Tools ","tools":[{"type":" Namespace ","name":"mcp__cua_repl","tools":[]}]}]}`), want: true},
+		{name: "apikey_with_tool_search_output_namespace_tool_keeps", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":"tool_search_output","status":"completed","call_id":"search_1","tools":[{"type":"namespace","name":"mcp__notion","tools":[{"type":"function","name":"get_page"}]}]}]}`), want: true},
+		{name: "apikey_with_lite_function_only_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"function","name":"js","namespace":"mcp__cua_repl"}]}]}`), want: false},
+		{name: "apikey_function_tool_with_namespace_field_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, body: []byte(`{"tools":[{"type":"function","name":"automation_update","namespace":"mcp__codex_app"}]}`), want: false},
+		{name: "apikey_compact_with_namespace_tool_strips", account: apiKey, transport: OpenAIUpstreamTransportHTTPSSE, compactPath: true, body: []byte(`{"tools":[{"type":"namespace","name":"mcp__codex_app","tools":[]}]}`), want: false},
 		{name: "setup_token_keeps", account: setupToken, transport: OpenAIUpstreamTransportHTTPSSE, want: true},
 		{name: "nil_account", account: nil, transport: OpenAIUpstreamTransportHTTPSSE, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, shouldKeepOpenAIResponsesToolCallNamespaces(
-				tt.account, tt.transport, tt.passthroughEnabled, tt.compactPath,
+				tt.account, tt.transport, tt.passthroughEnabled, tt.compactPath, tt.body,
 			))
 		})
 	}
@@ -170,6 +181,8 @@ func TestStripOpenAIResponsesInputNamespaces(t *testing.T) {
 
 func TestStripOpenAIResponsesInputNamespacesLeavesOtherShapesByteExact(t *testing.T) {
 	tests := [][]byte{
+		[]byte(`{"input":[],"tools":[{"type":"namespace"}]}`),
+		[]byte(`{"input":[null,42,"namespace",{"content":{"namespace":"nested"}}]}`),
 		[]byte(`{"input":"text","namespace":"top-level"}`),
 		[]byte(`{"input":{"namespace":"single-object"}}`),
 		[]byte(`{"input":[{"content":{"namespace":"nested-only"}}],"tools":[{"namespace":"keep"}]}`),
@@ -180,6 +193,42 @@ func TestStripOpenAIResponsesInputNamespacesLeavesOtherShapesByteExact(t *testin
 			require.NoError(t, err)
 			require.Equal(t, body, stripped)
 		}
+	}
+}
+
+func TestStripOpenAIResponsesInputNamespacesPreservesUnchangedSpans(t *testing.T) {
+	for _, input := range []string{
+		`[ {"namespace":"drop","type":"message"} ]`,
+		`[ null, 9007199254740993, {"namespace":"drop","type":"message"} ]`,
+		`[ {"namespace":"drop","type":"message"}, "tail", {"content":{"namespace":"nested"}} ]`,
+		`[ {"namespace":"drop","type":"message"}, {"type":"function_call","namespace":"keep"}, {"namespace":"drop","type":"message"} ]`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			body := []byte(" \n{\"prefix\":9007199254740993,\"input\":" + input + ",\"tail\":true} \n")
+			original := append([]byte(nil), body...)
+			out, err := stripOpenAIResponsesInputNamespaces(body, true)
+			require.NoError(t, err)
+			require.True(t, gjson.ValidBytes(out))
+			require.Equal(t, strings.ReplaceAll(string(body), `"namespace":"drop",`, ""), string(out))
+			require.Equal(t, original, body, "must not mutate the input body")
+		})
+	}
+}
+
+func TestStripOpenAIResponsesInputNamespacesNullAndKeptPrefix(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		body := []byte(`{"input":[null,42,"keep",{"type":"function_call","namespace":"files"},{"type":"message","namespace":null,"content":"keep"}]}`)
+		out, err := stripOpenAIResponsesInputNamespaces(body, keep)
+		require.NoError(t, err)
+		require.True(t, gjson.ValidBytes(out))
+		require.Equal(t, 5, len(gjson.GetBytes(out, "input").Array()))
+		for index := 0; index < 3; index++ {
+			path := "input." + strconv.Itoa(index)
+			require.Equal(t, gjson.GetBytes(body, path).Raw, gjson.GetBytes(out, path).Raw)
+		}
+		require.Equal(t, keep, gjson.GetBytes(out, "input.3.namespace").Exists())
+		require.False(t, gjson.GetBytes(out, "input.4.namespace").Exists())
+		require.Equal(t, "keep", gjson.GetBytes(out, "input.4.content").String())
 	}
 }
 
@@ -232,4 +281,31 @@ func TestStripOpenAIResponsesInputNamespacesKeepsToolCallNamespaces(t *testing.T
 	for index := 0; index < 8; index++ {
 		require.False(t, gjson.GetBytes(strippedAll, "input."+strconv.Itoa(index)+".namespace").Exists())
 	}
+}
+
+func TestStripOpenAIResponsesInputNamespacesBackfillsMissingFunctionCallNamespace(t *testing.T) {
+	body := []byte(`{
+		"tools":[
+			{"type":"tool_search"},
+			{"type":"function","name":"exec_command"}
+		],
+		"input":[
+			{"type":"tool_search_output","status":"completed","call_id":"search_1","tools":[
+				{"type":"namespace","name":"mcp__notion","tools":[
+					{"type":"function","name":"get_page"}
+				]}
+			]},
+			{"type":"function_call","call_id":"call_363","name":"get_page","arguments":"{\"id\":\"p1\"}"},
+			{"type":"function_call","call_id":"call_flat","name":"mcp__notion__get_page","arguments":"{\"id\":\"p2\"}"},
+			{"type":"function_call","call_id":"call_top","name":"exec_command","arguments":"{}"}
+		]
+	}`)
+
+	out, err := stripOpenAIResponsesInputNamespaces(body, true)
+	require.NoError(t, err)
+	require.Equal(t, "mcp__notion", gjson.GetBytes(out, "input.1.namespace").String())
+	require.Equal(t, "get_page", gjson.GetBytes(out, "input.1.name").String())
+	require.Equal(t, "mcp__notion", gjson.GetBytes(out, "input.2.namespace").String())
+	require.Equal(t, "get_page", gjson.GetBytes(out, "input.2.name").String())
+	require.False(t, gjson.GetBytes(out, "input.3.namespace").Exists())
 }

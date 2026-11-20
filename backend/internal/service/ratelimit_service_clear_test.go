@@ -239,6 +239,30 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsErrorAndRateLi
 	require.Equal(t, []int64{42}, blocker.clearedIDs)
 }
 
+func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsModelOnlyCooldown(t *testing.T) {
+	repo := &rateLimitClearRepoStub{
+		getByIDAccount: &Account{
+			ID:     43,
+			Status: StatusActive,
+			Extra: map[string]any{
+				"model_rate_limits": map[string]any{
+					"glm-5.3-flash": map[string]any{
+						"rate_limit_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+					},
+				},
+			},
+		},
+	}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+
+	result, err := svc.RecoverAccountAfterSuccessfulTest(context.Background(), 43)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.ClearedRateLimit)
+	require.Equal(t, 1, repo.clearRateLimitCalls)
+	require.Equal(t, 1, repo.clearModelRateLimitCalls)
+}
+
 func TestRateLimitService_RecoverAccountAfterSuccessfulTest_NoRecoverableStateIsNoop(t *testing.T) {
 	repo := &rateLimitClearRepoStub{
 		getByIDAccount: &Account{
