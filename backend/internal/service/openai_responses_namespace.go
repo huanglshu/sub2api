@@ -367,13 +367,13 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 					return false
 				}
 			}
-			if !changed {
-				rebuilt.Grow(len(input.Raw) + 64)
-				changed = true
+			if out == nil {
+				out = make([]byte, 0, len(body))
+				out = append(out, body[:inputStart]...)
 			}
 			itemStart := item.Index - input.Index
-			_, _ = rebuilt.WriteString(input.Raw[copyFrom:itemStart])
-			_, _ = rebuilt.Write(itemBody)
+			out = append(out, input.Raw[copyFrom:itemStart]...)
+			out = append(out, itemBody...)
 			copyFrom = itemStart + len(item.Raw)
 			return true
 		}

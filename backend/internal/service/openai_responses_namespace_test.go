@@ -309,3 +309,29 @@ func TestStripOpenAIResponsesInputNamespacesBackfillsMissingFunctionCallNamespac
 	require.Equal(t, "get_page", gjson.GetBytes(out, "input.2.name").String())
 	require.False(t, gjson.GetBytes(out, "input.3.namespace").Exists())
 }
+
+func TestStripOpenAIResponsesInputNamespacesMixedBackfillAndRemoval(t *testing.T) {
+	for _, input := range []string{
+		`[{"type":"message","namespace":"drop"},{"type":"function_call","name":"files__read"}]`,
+		`[{"type":"function_call","name":"files__read"},{"type":"message","namespace":"drop"}]`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			body := []byte(`{"prefix":9007199254740993,"tools":[{"type":"namespace","name":"files","tools":[{"type":"function","name":"read"}]}],"input":` + input + `,"tail":true}`)
+			original := append([]byte(nil), body...)
+			out, err := stripOpenAIResponsesInputNamespaces(body, true)
+			require.NoError(t, err)
+			require.True(t, gjson.ValidBytes(out))
+			require.Equal(t, "9007199254740993", gjson.GetBytes(out, "prefix").Raw)
+			require.True(t, gjson.GetBytes(out, "tail").Bool())
+			for _, item := range gjson.GetBytes(out, "input").Array() {
+				if item.Get("type").String() == "function_call" {
+					require.Equal(t, "files", item.Get("namespace").String())
+					require.Equal(t, "read", item.Get("name").String())
+				} else {
+					require.False(t, item.Get("namespace").Exists())
+				}
+			}
+			require.Equal(t, original, body)
+		})
+	}
+}
