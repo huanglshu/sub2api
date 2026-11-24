@@ -9,6 +9,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // RejectConflictingRequestFields 拒绝「同名字段重复声明」的网关请求。
@@ -55,9 +57,15 @@ func RejectConflictingRequestFields() gin.HandlerFunc {
 		if doc := requestmodel.TrimUTF8BOM(body); len(doc) != len(body) && requestmodel.LooksLikeJSON(doc) {
 			body = doc
 		}
-		requestmodel.ResetRequestBody(c.Request, body)
-
 		field, conflict := requestmodel.ConflictingField(c.GetHeader("Content-Type"), body)
+		if conflict && c.Request.URL != nil && (strings.HasSuffix(c.Request.URL.Path, "/messages") || strings.HasSuffix(c.Request.URL.Path, "/messages/count_tokens")) {
+			cleaned := stripCodeBuddyMessageMetadata(body)
+			if len(cleaned) != len(body) {
+				body = cleaned
+				field, conflict = requestmodel.ConflictingField(c.GetHeader("Content-Type"), body)
+			}
+		}
+		requestmodel.ResetRequestBody(c.Request, body)
 		if !conflict {
 			c.Next()
 			return
@@ -67,6 +75,45 @@ func RejectConflictingRequestFields() gin.HandlerFunc {
 		writeGatewayInvalidRequest(c, http.StatusBadRequest, fmt.Sprintf("Request body declares field %.64q more than once", field))
 		c.Abort()
 	}
+}
+
+// WorkBuddy may attach client-only CodeBuddy metadata to message objects. It can
+// contain duplicate JSON members and is not part of the Messages API. Remove
+// just that namespace before conflict checking, keeping the rest of the request
+// (including all model, message and tool fields) subject to the normal checks.
+func stripCodeBuddyMessageMetadata(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	remaining := 128
+	for i, message := range messages.Array() {
+		prefix := fmt.Sprintf("messages.%d.", i)
+		for _, path := range []string{
+			`clientMeta\.codebuddy\.ai`, `clientleta\.codebuddy\.ai`,
+			`clientMeta.codebuddy\.ai`, `clientleta.codebuddy\.ai`,
+			`clientMeta.codebuddy.ai`, `clientleta.codebuddy.ai`,
+		} {
+			if remaining == 0 || !message.Get(path).Exists() {
+				continue
+			}
+			fullPath := prefix + path
+			// Repeated namespace fields are discarded too. Do not loop without a
+			// bound if a JSON path cannot be removed by sjson.
+			for remaining > 0 && gjson.GetBytes(body, fullPath).Exists() {
+				next, err := sjson.DeleteBytes(body, fullPath)
+				if err != nil || len(next) >= len(body) {
+					break
+				}
+				body = next
+				remaining--
+			}
+		}
+	}
+	return body
 }
 
 // writeGatewayInvalidRequest 按入口协议输出 invalid_request_error：

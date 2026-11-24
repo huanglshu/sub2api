@@ -34,7 +34,7 @@ func newRequestFieldConflictTestRouter(apiKey *service.APIKey) (*gin.Engine, *[]
 		c.Status(http.StatusOK)
 	}
 	for _, path := range []string{
-		"/v1/messages", "/v1/responses", "/v1/chat/completions", "/v1/images/edits", "/v1/live",
+		"/v1/messages", "/v1/messages/count_tokens", "/v1/responses", "/v1/chat/completions", "/v1/images/edits", "/v1/live",
 		"/v1beta/models/*modelAction",
 	} {
 		router.POST(path, handler)
@@ -93,6 +93,78 @@ func TestRejectConflictingRequestFieldsCoversOtherFields(t *testing.T) {
 	}
 	if len(*handlerBodies) != 0 {
 		t.Fatalf("expected handler not to run, got %v", *handlerBodies)
+	}
+}
+
+func TestWorkBuddyMessageMetadataIsStrippedBeforeConflictCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name, metadata, want string
+	}{
+		{"nested namespace", `"clientMeta":{"keep":1,"codebuddy.ai":{"contentBlocks":[{"meta":{"file":1,"file":2}}]}}`, `"clientMeta":{"keep":1}`},
+		{"nested path", `"clientleta":{"codebuddy":{"ai":{"meta":{"file":1,"file":2}}},"keep":1}`, `"clientleta":{"codebuddy":{},"keep":1}`},
+		{"flat namespace", `"clientMeta.codebuddy.ai":{"meta":{"file":1,"file":2}}`, ""},
+		{"repeated namespace", `"clientMeta":{"codebuddy.ai":{"a":1},"codebuddy.ai":{"a":2},"keep":1}`, `"clientMeta":{"keep":1}`},
+		{"escaped namespace", `"clientMeta":{"codebuddy\u002eai":{"meta":{"file":1,"file":2}}}`, `"clientMeta":{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, handlerBodies := newRequestFieldConflictTestRouter(allowlistAPIKey(false))
+			body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello",` + tc.metadata + `}]}`
+			w := doJSON(t, router, http.MethodPost, "/v1/messages", body)
+			if w.Code != http.StatusOK || len(*handlerBodies) != 1 {
+				t.Fatalf("expected request to reach handler, got %d: %s", w.Code, w.Body.String())
+			}
+			got := (*handlerBodies)[0]
+			if strings.Contains(got, `"file"`) || (tc.want != "" && !strings.Contains(got, tc.want)) || !strings.Contains(got, `"content":"hello"`) {
+				t.Fatalf("unexpected forwarded body: %s", got)
+			}
+		})
+	}
+}
+
+func TestWorkBuddyMetadataDoesNotBypassConflictChecks(t *testing.T) {
+	metadata := `"clientMeta":{"codebuddy.ai":{"meta":{"file":1,"file":2}}}`
+	for _, body := range []string{
+		`{"model":"a","model":"b","messages":[{"role":"user",` + metadata + `}]}`,
+		`{"model":"a","messages":[{"role":"user",` + metadata + `,"role":"assistant"}]}`,
+		`{"model":"a","messages":[{"role":"user",` + metadata + `}],"messages":[]}`,
+		`{"model":"a","messages":[{"role":"user",` + metadata + `}],"metadata":{"user_id":"a","user_id":"b"}}`,
+	} {
+		router, handlerBodies := newRequestFieldConflictTestRouter(allowlistAPIKey(false))
+		w := doJSON(t, router, http.MethodPost, "/v1/messages", body)
+		if w.Code != http.StatusBadRequest || len(*handlerBodies) != 0 {
+			t.Fatalf("conflicting request must be rejected: %d %s", w.Code, w.Body.String())
+		}
+	}
+	// Other endpoints retain their existing conflict policy.
+	router, _ := newRequestFieldConflictTestRouter(allowlistAPIKey(false))
+	w := doJSON(t, router, http.MethodPost, "/v1/responses", `{"model":"a","messages":[{"role":"user",`+metadata+`}]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("non-Messages request must not be rewritten: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkBuddyMetadataOnlyChangesConflictingMessages(t *testing.T) {
+	router, bodies := newRequestFieldConflictTestRouter(allowlistAPIKey(false))
+	clean := `{"model":"a","messages":[{"role":"user","clientMeta":{"codebuddy.ai":{"meta":{"file":"x"}}}}]}`
+	w := doJSON(t, router, http.MethodPost, "/v1/messages", clean)
+	if w.Code != http.StatusOK || len(*bodies) != 1 || (*bodies)[0] != clean {
+		t.Fatalf("unambiguous metadata must be preserved: %d %v", w.Code, *bodies)
+	}
+	conflict := `{"model":"a","messages":[{"role":"user","clientMeta":{"codebuddy.ai":{"meta":{"file":1,"file":2}}}}]}`
+	w = doJSON(t, router, http.MethodPost, "/v1/messages/count_tokens", conflict)
+	if w.Code != http.StatusOK || len(*bodies) != 2 || strings.Contains((*bodies)[1], `"file"`) {
+		t.Fatalf("count_tokens should receive cleaned metadata: %d %v", w.Code, *bodies)
+	}
+}
+
+func TestWorkBuddyMetadataInLongConversation(t *testing.T) {
+	router, bodies := newRequestFieldConflictTestRouter(allowlistAPIKey(false))
+	message := `{"role":"user","content":"hi"}`
+	problem := `{"role":"user","content":"hi","clientMeta":{"codebuddy.ai":{"contentBlocks":[{"meta":{"file":"a","file":"b"}}]}}}`
+	body := `{"model":"deepseek-v4-flash","messages":[` + strings.Repeat(message+",", 61) + problem + `,` + problem + `]}`
+	w := doJSON(t, router, http.MethodPost, "/v1/messages", body)
+	if w.Code != http.StatusOK || len(*bodies) != 1 || strings.Contains((*bodies)[0], `"file"`) || strings.Count((*bodies)[0], `"role":"user"`) != 63 {
+		t.Fatalf("long conversation must retain all messages: %d %s", w.Code, w.Body.String())
 	}
 }
 
